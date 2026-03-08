@@ -42,6 +42,12 @@ Your AI agent did something unexpected. Now what?
 
 ## Install
 
+**From GitHub (current):**
+```bash
+pip install git+https://github.com/ShekharBhardwaj/AgentLedger.git
+```
+
+**From PyPI (coming soon):**
 ```bash
 pip install agentledger
 ```
