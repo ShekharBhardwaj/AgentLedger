@@ -53,7 +53,7 @@ def auto_instrument(
     tracer.config.capture_outputs = capture_outputs
     
     # Patch supported clients
-    from .patches import openai_patch, anthropic_patch
+    from . import openai_patch, anthropic_patch
     
     openai_patch.patch(tracer)
     anthropic_patch.patch(tracer)
