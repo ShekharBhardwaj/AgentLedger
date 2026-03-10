@@ -51,11 +51,11 @@ Repository = "https://github.com/ShekharBhardwaj/AgentLedger"
 Issues = "https://github.com/ShekharBhardwaj/AgentLedger/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentledger"]
+packages = ["agentledger"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/src",
+    "/agentledger",
     "/README.md",
     "/LICENSE",
 ]

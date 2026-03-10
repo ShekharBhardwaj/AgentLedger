@@ -42,14 +42,14 @@ Your AI agent did something unexpected. Now what?
 
 ## Install
 
-**From GitHub (current):**
-```bash
-pip install git+https://github.com/ShekharBhardwaj/AgentLedger.git
-```
-
-**From PyPI (coming soon):**
 ```bash
 pip install agentledger
+```
+
+Or directly from GitHub:
+
+```bash
+pip install git+https://github.com/ShekharBhardwaj/AgentLedger.git
 ```
 
 ## Quick Start
@@ -108,7 +108,7 @@ print(trace.explain())
 
 # Access raw events
 for event in trace.events:
-    print(event.type, event.duration_ms)
+    print(event.event_type, event.duration_ms)
 ```
 
 ## Configuration
