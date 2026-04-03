@@ -20,11 +20,10 @@ pip install "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.gi
 
 **2. Start the proxy**
 
-In a new terminal tab (keep this running):
+In a new terminal tab, from the same directory (keep this running):
 
 ```bash
-source venv/bin/activate
-AGENTLEDGER_UPSTREAM_URL=https://api.openai.com python -m agentledger.proxy
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com ./venv/bin/python -m agentledger.proxy
 ```
 
 You should see uvicorn start on `http://localhost:8000`.
