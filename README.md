@@ -7,7 +7,8 @@ See exactly what your AI agent did and why.
 ## Prerequisites
 
 - Python 3.9+
-- Postgres running locally (`brew install postgresql` on Mac)
+
+That's it. AgentLedger uses SQLite by default — no database setup required.
 
 ---
 
@@ -19,28 +20,20 @@ pip install "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.gi
 
 ---
 
-## Setup
+## Quick Start
 
-**1. Create the database**
-
-```bash
-createdb agentledger
-```
-
-**2. Start the proxy**
+**1. Start the proxy**
 
 ```bash
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
-AGENTLEDGER_PG_DSN=postgresql://localhost/agentledger \
 python -m agentledger.proxy
 ```
 
 - `AGENTLEDGER_UPSTREAM_URL` — where to forward LLM requests (OpenAI, Anthropic, or your own gateway)
-- `AGENTLEDGER_PG_DSN` — the Postgres database you created in step 1
 
-The proxy is now running on `http://localhost:8000`.
+The proxy starts on `http://localhost:8000` and saves traces to `agentledger.db` in your current directory.
 
-**3. Point your agent at the proxy**
+**2. Point your agent at the proxy**
 
 Change one line — the `base_url`:
 
@@ -59,7 +52,7 @@ response = client.chat.completions.create(
 )
 ```
 
-**4. See what happened**
+**3. See what happened**
 
 Every response comes back with an `x-agentledger-action-id` header:
 
@@ -109,13 +102,13 @@ client = anthropic.Anthropic(
 
 ---
 
-## Using LiteLLM?
-
-Set the upstream to your LiteLLM instance:
+## Using Postgres in production?
 
 ```bash
-AGENTLEDGER_UPSTREAM_URL=http://localhost:4000 \
-AGENTLEDGER_PG_DSN=postgresql://localhost/agentledger \
+pip install "agentledger[postgres] @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
+
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
+AGENTLEDGER_DSN=postgresql://localhost/agentledger \
 python -m agentledger.proxy
 ```
 
@@ -126,7 +119,7 @@ python -m agentledger.proxy
 | Variable | Default | Description |
 |---|---|---|
 | `AGENTLEDGER_UPSTREAM_URL` | `https://api.openai.com` | Where to forward requests |
-| `AGENTLEDGER_PG_DSN` | *(required)* | Postgres connection string |
+| `AGENTLEDGER_DSN` | `sqlite:///agentledger.db` | Database — SQLite or Postgres |
 | `AGENTLEDGER_PORT` | `8000` | Proxy port |
 
 ---

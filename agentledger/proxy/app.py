@@ -3,8 +3,8 @@ AgentLedger proxy — sits between the agent and LiteLLM (or any OpenAI-compatib
 upstream).
 
 Intercepts POST /v1/chat/completions and POST /v1/messages, assigns an action_id,
-normalizes to canonical schema, stores to Postgres, then returns the upstream
-response unmodified — including full streaming support.
+normalizes to canonical schema, stores to SQLite or Postgres, then returns the
+upstream response unmodified — including full streaming support.
 
 Session grouping:
     Pass x-agentledger-session-id in the request to group related calls.
@@ -20,8 +20,8 @@ Usage:
     from agentledger.proxy.app import create_app
 
     app = create_app(
-        upstream_url="http://localhost:4000",
-        pg_dsn="postgresql://user:pass@localhost/agentledger",
+        upstream_url="https://api.openai.com",
+        dsn="sqlite:///agentledger.db",
     )
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
@@ -47,11 +47,11 @@ from .stream import reconstruct_from_sse
 _LLM_PATHS = {"v1/chat/completions", "v1/messages"}
 
 
-def create_app(upstream_url: str, pg_dsn: str) -> FastAPI:
+def create_app(upstream_url: str, dsn: str) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.store = await Store.connect(pg_dsn)
+        app.state.store = await Store.connect(dsn)
         app.state.client = httpx.AsyncClient(
             base_url=upstream_url,
             timeout=httpx.Timeout(120.0),

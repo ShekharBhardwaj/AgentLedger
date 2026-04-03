@@ -9,7 +9,7 @@ Usage:
     # AgentLedger prints the decision trace automatically
 """
 
-from .tracer import Tracer, Trace, TraceEvent, get_tracer, get_last_trace
+from .tracer import Trace, TraceEvent, get_tracer, get_last_trace
 from .render import render_trace
 
 __version__ = "0.1.0"
