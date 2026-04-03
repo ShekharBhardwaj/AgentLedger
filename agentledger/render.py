@@ -137,39 +137,6 @@ def _find_end_event(events: List, start_idx: int, event_id: str):
     return None
 
 
-def _find_tool_result(events: List, current_idx: int, tool_name: str) -> Optional[str]:
-    """
-    Try to find the tool result from subsequent messages.
-    
-    Looks at the next LLM call's messages to find tool results.
-    """
-    for j in range(current_idx + 1, len(events)):
-        if events[j].event_type == "llm_start":
-            messages = events[j].data.get("messages", [])
-            for msg in messages:
-                if isinstance(msg, dict):
-                    # OpenAI format: role=tool
-                    role = msg.get("role", "")
-                    if role in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if content:
-                            return content
-                    
-                    # Anthropic format: tool_result in content blocks
-                    content = msg.get("content", [])
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict):
-                                if block.get("type") == "tool_result":
-                                    result_content = block.get("content", "")
-                                    if isinstance(result_content, list):
-                                        for sub in result_content:
-                                            if isinstance(sub, dict) and sub.get("type") == "text":
-                                                return sub.get("text", "")
-                                    return result_content
-            break
-    return None
-
 
 def _find_tool_result_by_id(events: List, current_idx: int, tool_call_id: Optional[str], tool_name: str) -> Optional[str]:
     """

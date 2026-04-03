@@ -1,152 +1,167 @@
 # AgentLedger
 
-**See what your AI agent actually did.**
+**Runtime observability for AI agents. See exactly why your agent did what it did.**
 
-```python
-import agentledger
-agentledger.auto_instrument()
+Point your agent at AgentLedger instead of LiteLLM. Every LLM call is captured, stored, and retrievable by action ID — no code changes to your agent required.
 
-# Your existing agent code — unchanged
-agent.run("Find the best flight to NYC")
-```
+---
 
-Output:
+## How it works
 
 ```
-AgentLedger Trace
-─────────────────────────────────────────────────────
-├─► LLM Call (gpt-4o) ─────────────────── 1,247ms
-│   Input: "Find the best flight to NYC"
-│   Tool Request: search_flights(destination="NYC")
-│
-├─► Tool: search_flights ──────────────── 892ms
-│   Input: {"destination": "NYC"}
-│   Result: [{"flight": "AA203", "price": 420}]
-│
-├─► LLM Call (gpt-4o) ─────────────────── 634ms
-│   Output: "Flight AA203 at $420 is the best option"
-│
-└─► Done ──────────────────────────────── 2,773ms total
+Your Agent → AgentLedger Proxy → LiteLLM → Any Model
+                    ↓
+               Postgres (canonical trace)
 ```
 
-## The Problem
+AgentLedger intercepts HTTP traffic at the network level. It works with any agent framework, any model, any gateway.
 
-Your AI agent did something unexpected. Now what?
-
-- Check logs → useless, just says "tool called"
-- Check LLM traces → shows prompt/response, not the decision chain
-- Add print statements → redeploy, wait, pray
-- Ask the agent → it hallucinates an explanation
-
-**AgentLedger answers one question: "Why did my agent do that?"**
+---
 
 ## Install
 
 ```bash
-pip install agentledger
+pip install "git+https://github.com/ShekharBhardwaj/AgentLedger.git[proxy]"
 ```
 
-Or directly from GitHub:
-
-```bash
-pip install git+https://github.com/ShekharBhardwaj/AgentLedger.git
-```
+---
 
 ## Quick Start
 
-```python
-import agentledger
-agentledger.auto_instrument()
+**1. Start the proxy**
 
-# That's it. Your agent code stays exactly the same.
-# AgentLedger automatically traces all LLM calls and tool usage.
+```bash
+AGENTLEDGER_UPSTREAM_URL=http://localhost:4000 \
+AGENTLEDGER_PG_DSN=postgresql://user:pass@localhost/agentledger \
+python -m agentledger.proxy
 ```
 
-## What Gets Captured
-
-| Event | Captured |
-|-------|----------|
-| LLM prompts | ✓ |
-| LLM responses | ✓ |
-| Tool calls | ✓ |
-| Tool arguments | ✓ |
-| Tool results | ✓ |
-| Timing | ✓ |
-| Errors | ✓ |
-
-## Supported Providers
-
-- [x] OpenAI
-- [x] Anthropic
-- [ ] LiteLLM (coming soon)
-- [ ] Azure OpenAI (coming soon)
-
-## Framework Agnostic
-
-Works with any agent framework:
-
-- LangChain
-- CrewAI
-- AutoGen
-- Custom implementations
-
-AgentLedger patches at the LLM client level, so it captures everything regardless of which framework you use.
-
-## API
+**2. Point your agent at the proxy instead of LiteLLM**
 
 ```python
-import agentledger
+from openai import OpenAI
 
-# Start auto-instrumentation
-agentledger.auto_instrument()
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="your-key",
+)
 
-# Get the last trace
-trace = agentledger.get_last_trace()
-
-# Print it again
-print(trace.explain())
-
-# Access raw events
-for event in trace.events:
-    print(event.event_type, event.duration_ms)
+# Your agent code is unchanged from here
 ```
 
-## Configuration
+**3. Retrieve what happened**
+
+Every response includes an `x-agentledger-action-id` header. Use it to pull the full trace:
+
+```bash
+curl http://localhost:8000/explain/<action_id>
+```
+
+---
+
+## Sessions
+
+Group all LLM calls from a single agent run under one session ID:
 
 ```python
-agentledger.auto_instrument(
-    print_traces=True,      # Auto-print to console (default: True)
-    capture_inputs=True,    # Capture full prompts (default: True)
-    capture_outputs=True,   # Capture full responses (default: True)
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="your-key",
+    default_headers={"x-agentledger-session-id": "run-42"},
 )
 ```
 
-## Why Not LangSmith / OpenTelemetry / etc?
+Retrieve the full decision chain for that run:
 
-| Tool | Limitation |
-|------|------------|
-| LangSmith | LangChain only |
-| OpenTelemetry | Doesn't understand agent semantics |
-| Datadog | No concept of "agent decision" |
-| Print statements | Manual, incomplete, painful |
+```bash
+curl http://localhost:8000/session/run-42
+```
 
-AgentLedger is **framework-agnostic** and **agent-aware**.
+Returns all calls in order, with prompts, tool calls, responses, and timing.
+
+---
+
+## What gets captured
+
+Every intercepted call is normalized to a canonical schema and stored in Postgres:
+
+| Field | Description |
+|---|---|
+| `action_id` | UUID assigned at interception time |
+| `session_id` | Caller-supplied run identifier (optional) |
+| `messages` | Full prompt including system prompt |
+| `tools` | Tool definitions passed to the model |
+| `content` | Model's text response |
+| `tool_calls` | Tool calls the model requested |
+| `stop_reason` | Why the model stopped |
+| `tokens_in / tokens_out` | Token usage |
+| `latency_ms` | End-to-end call time |
+
+---
+
+## Provider support
+
+The proxy normalizes all provider formats internally. It works with anything LiteLLM supports — OpenAI, Anthropic, Azure, Gemini, local models, and more.
+
+Direct Anthropic (`POST /v1/messages`) is also intercepted if you route it through the proxy.
+
+---
+
+## API reference
+
+| Endpoint | Description |
+|---|---|
+| `POST /v1/chat/completions` | Proxied + captured |
+| `POST /v1/messages` | Proxied + captured (Anthropic) |
+| `GET /explain/{action_id}` | Retrieve a single captured call |
+| `GET /session/{session_id}` | Retrieve all calls in a run, ordered by time |
+
+---
+
+## Configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `AGENTLEDGER_UPSTREAM_URL` | `http://localhost:4000` | LiteLLM base URL |
+| `AGENTLEDGER_PG_DSN` | *(required)* | Postgres connection string |
+| `AGENTLEDGER_HOST` | `0.0.0.0` | Proxy bind host |
+| `AGENTLEDGER_PORT` | `8000` | Proxy bind port |
+
+---
+
+## MCP tool server
+
+AgentLedger exposes its retrieval tools as an MCP server at `POST /mcp`.
+
+Configure in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "agentledger": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+Available tools: `explain(action_id)`, `get_session(session_id)`.
+
+---
 
 ## Roadmap
 
-- [x] OpenAI instrumentation
-- [x] Anthropic instrumentation
-- [ ] LiteLLM support
-- [ ] Structured event export (JSON)
-- [ ] Framework adapters (LangChain, CrewAI)
-- [ ] `explain(action_id)` for deep inspection
-- [ ] Policy violations detection
-- [ ] Dashboard (optional hosted)
+- [x] Transparent HTTP proxy
+- [x] Canonical schema normalization (OpenAI + Anthropic)
+- [x] Postgres storage
+- [x] `explain(action_id)` retrieval
+- [x] Session grouping
+- [x] Streaming capture
+- [x] MCP tool layer
+- [ ] Dashboard
+
+---
 
 ## License
 
 MIT
-
-## Contributing
-
-Issues and PRs welcome. This is early — feedback shapes the direction.

@@ -17,6 +17,7 @@ __all__ = [
     "auto_instrument",
     "get_last_trace",
     "get_tracer",
+    "render_trace",
     "Trace",
     "TraceEvent",
 ]
