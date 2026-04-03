@@ -1,4 +1,6 @@
 .DS_Store
+.claude/
+CLAUDE.md
 
 # Python bytecode and caches
 __pycache__/
