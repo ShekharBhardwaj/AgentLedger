@@ -45,6 +45,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .dashboard import get_dashboard_html
 from .alerts import AlertConfig, check_and_fire
+from .otel import emit_span
 from .ratelimit import RateLimitConfig, RateLimiter
 from .export import build_export, render_html_report
 from .mcp import handle_mcp
@@ -285,6 +286,10 @@ def create_app(
                     action_id, canonical_req, canonical_resp,
                     status_code=status_code, error_detail=error_detail, **meta,
                 )
+                emit_span(
+                    action_id, canonical_req, canonical_resp,
+                    status_code=status_code, **meta,
+                )
                 await broadcaster.broadcast({
                     "type": "call",
                     "action_id": action_id,
@@ -356,6 +361,10 @@ async def _streaming_proxy(
                         b"".join(chunks), latency_ms, canonical_req.model_id
                     )
                     await store.save(
+                        action_id, canonical_req, canonical_resp,
+                        status_code=200, **meta,
+                    )
+                    emit_span(
                         action_id, canonical_req, canonical_resp,
                         status_code=200, **meta,
                     )

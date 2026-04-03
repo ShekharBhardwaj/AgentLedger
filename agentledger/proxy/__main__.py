@@ -19,6 +19,7 @@ import uvicorn
 
 from .alerts import AlertConfig
 from .app import create_app
+from .otel import init_otel
 from .ratelimit import RateLimitConfig
 
 
@@ -38,6 +39,20 @@ def _float_env(key: str):
     val = os.environ.get(key)
     return float(val) if val else None
 
+
+_otel_endpoint = os.environ.get("AGENTLEDGER_OTEL_ENDPOINT")
+if _otel_endpoint:
+    _otel_headers: dict[str, str] = {}
+    for pair in os.environ.get("AGENTLEDGER_OTEL_HEADERS", "").split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            k, _, v = pair.partition("=")
+            _otel_headers[k.strip()] = v.strip()
+    init_otel(
+        endpoint=_otel_endpoint,
+        service_name=os.environ.get("AGENTLEDGER_OTEL_SERVICE_NAME", "agentledger"),
+        headers=_otel_headers or None,
+    )
 
 upstream_url = os.environ.get("AGENTLEDGER_UPSTREAM_URL", "https://api.openai.com")
 dsn          = os.environ.get("AGENTLEDGER_DSN", "sqlite:///agentledger.db")

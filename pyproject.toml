@@ -1,35 +1,26 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agentledger"
-version = "0.1.0"
-description = "See what your AI agent actually did."
+name = "agentic-ledger"
+dynamic = ["version"]
+description = "Runtime observability for AI agents — see exactly what your agent did, why it did it, and what it cost."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     { name = "Shekhar Bhardwaj" }
 ]
 keywords = [
-    "ai",
-    "agents",
-    "llm",
-    "debugging",
-    "tracing",
-    "observability",
-    "openai",
-    "anthropic",
-    "langchain",
-    "crewai",
+    "ai", "agents", "llm", "observability", "debugging", "tracing",
+    "openai", "anthropic", "langchain", "crewai", "audit",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -47,18 +38,26 @@ dependencies = [
 postgres = [
     "asyncpg>=0.29",
 ]
+otel = [
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-http>=1.24",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
     "openai>=1.0",
     "anthropic>=0.18",
     "aiosqlite>=0.19",
+    "hatch-vcs",
 ]
 
 [project.urls]
-Homepage = "https://github.com/ShekharBhardwaj/AgentLedger"
+Homepage   = "https://github.com/ShekharBhardwaj/AgentLedger"
 Repository = "https://github.com/ShekharBhardwaj/AgentLedger"
-Issues = "https://github.com/ShekharBhardwaj/AgentLedger/issues"
+Issues     = "https://github.com/ShekharBhardwaj/AgentLedger/issues"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentledger"]
@@ -69,3 +68,6 @@ include = [
     "/README.md",
     "/LICENSE",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

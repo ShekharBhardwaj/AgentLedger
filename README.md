@@ -1,5 +1,10 @@
 # AgentLedger
 
+[![CI](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentic-ledger)](https://pypi.org/project/agentic-ledger/)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/shekharBhardwaj/agentledger)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Runtime observability for AI agents — see exactly what your agent did, why it did it, and what it cost.
 
 Works with **any agent framework**, **any LLM provider**, **any model gateway**. Zero code changes required. Point your agent at the proxy and everything is captured automatically.
@@ -32,18 +37,35 @@ docker run -p 8000:8000 \
   ghcr.io/shekharBhardwaj/agentledger:latest
 ```
 
+Or with docker compose (SQLite by default, Postgres available — see `docker-compose.yml`):
+```bash
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com docker compose up
+```
+
 With `uv`:
 ```bash
-uv add "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
+uv add agentic-ledger
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com uv run python -m agentledger.proxy
 ```
 
 With `pip`:
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
+pip install agentic-ledger
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com ./venv/bin/python -m agentledger.proxy
 ```
+
+> **Postgres?** Install the extra and set `AGENTLEDGER_DSN`:
+> ```bash
+> pip install "agentic-ledger[postgres]"
+> AGENTLEDGER_DSN=postgresql://user:password@localhost/agentledger
+> ```
+
+> **OpenTelemetry?** Install the extra and set `AGENTLEDGER_OTEL_ENDPOINT`:
+> ```bash
+> pip install "agentic-ledger[otel]"
+> AGENTLEDGER_OTEL_ENDPOINT=http://localhost:4318
+> ```
 
 Proxy starts on `http://localhost:8000`. Traces are saved to `agentledger.db` in the current folder (or `/data/agentledger.db` in Docker).
 
@@ -51,7 +73,7 @@ Proxy starts on `http://localhost:8000`. Traces are saved to `agentledger.db` in
 
 **Step 2 — Point your agent at the proxy**
 
-Two changes: set `base_url` to the proxy, and add a `session_id` header to group calls into a run. Everything else — your API key, model, messages — stays exactly the same.
+Two changes: set `base_url` to the proxy and add a session ID header to group calls into a run. Everything else — your API key, model, messages — stays exactly the same.
 
 **OpenAI:**
 ```python
@@ -82,9 +104,12 @@ client = anthropic.Anthropic(
 
 **LiteLLM / OpenRouter / any gateway:**
 ```bash
+# Point AgentLedger at your gateway
 AGENTLEDGER_UPSTREAM_URL=http://localhost:4000 uv run python -m agentledger.proxy
+
+# Then point your agent at AgentLedger
+client = OpenAI(base_url="http://localhost:8000/v1", ...)
 ```
-Then point your agent at `http://localhost:8000` — AgentLedger proxies through to LiteLLM.
 
 ---
 
@@ -97,8 +122,8 @@ http://localhost:8000
 The dashboard updates live via WebSocket as calls come in. No refresh needed.
 
 - **Calls tab** — every LLM call with full prompt, system prompt, tool calls, tool results, output, tokens, cost, latency, and errors
-- **Flow tab** — visual DAG of your multi-agent system. Shows each agent as a node with aggregated cost, latency, and call count. Edges represent handoffs between agents. Click a node to highlight its calls.
-- **Search** — full-text search across all sessions by prompt content, output, agent name, or user
+- **Flow tab** — visual DAG of your multi-agent system. Each agent is a node with aggregated cost, latency, and call count. Edges represent handoffs. Click a node to highlight its calls.
+- **Search** — full-text search across all sessions by prompt, output, agent name, or user ID
 
 ---
 
@@ -123,14 +148,14 @@ Every LLM call is stored with:
 | `tokens_in` / `tokens_out` | Token usage |
 | `cost_usd` | Estimated cost based on model pricing |
 | `latency_ms` | End-to-end response time |
-| `status_code` | HTTP status from upstream (captures errors too) |
+| `status_code` | HTTP status from upstream — errors are captured too |
 | `error_detail` | Upstream error message for non-200 responses |
-| `agent_name` | From header |
-| `user_id` | From header |
-| `app_id` | From header |
-| `environment` | From header |
+| `agent_name` | From `x-agentledger-agent-name` header |
+| `user_id` | From `x-agentledger-user-id` header |
+| `app_id` | From `x-agentledger-app-id` header |
+| `environment` | From `x-agentledger-environment` header |
 | `parent_action_id` | Parent call in a nested agent graph |
-| `handoff_from` / `handoff_to` | Agent handoff tracking |
+| `handoff_from` / `handoff_to` | Agent handoff tracking for the Flow DAG |
 
 ---
 
@@ -139,18 +164,18 @@ Every LLM call is stored with:
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Live dashboard |
-| `WS` | `/ws` | WebSocket stream — dashboard connects here for live updates |
+| `WS` | `/ws` | WebSocket stream — powers live dashboard updates |
 | `GET` | `/api/sessions` | List recent sessions with aggregated stats |
 | `GET` | `/api/search?q=...` | Full-text search across all captured calls |
 | `GET` | `/session/{session_id}` | All calls in a session, ordered by time |
 | `GET` | `/explain/{action_id}` | Single call by action ID |
 | `GET` | `/export/{session_id}` | JSON compliance export with SHA-256 integrity hash |
 | `GET` | `/export/{session_id}/report` | Printable HTML audit report |
-| `POST` | `/mcp` | MCP tool server — expose captured data to other agents |
+| `POST` | `/mcp` | MCP tool server — exposes captured data to other agents |
 
 **Examples:**
 ```bash
-# Inspect a session
+# All calls in a session
 curl http://localhost:8000/session/run-1
 
 # Search across all sessions
@@ -159,7 +184,7 @@ curl "http://localhost:8000/api/search?q=failed+to+connect"
 # Download JSON audit trail (includes SHA-256 hash for tamper detection)
 curl http://localhost:8000/export/run-1 -o audit-run-1.json
 
-# Open printable HTML report — print to PDF from browser
+# Printable HTML report — open in browser, print to PDF
 open http://localhost:8000/export/run-1/report
 ```
 
@@ -174,12 +199,12 @@ open http://localhost:8000/export/run-1/report
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `AGENTLEDGER_UPSTREAM_URL` | **Yes** | `https://api.openai.com` | LLM endpoint to forward requests to. Accepts OpenAI, Anthropic, LiteLLM, OpenRouter, or any OpenAI-compatible URL. |
-| `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` | Database connection string. SQLite for local dev, Postgres URL for production. |
+| `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` | Database. SQLite for local dev, Postgres URL for production. |
 | `AGENTLEDGER_HOST` | No | `0.0.0.0` | Host to bind to. Use `127.0.0.1` to restrict to localhost only. |
 | `AGENTLEDGER_PORT` | No | `8000` | Port to run on. |
-| `AGENTLEDGER_API_KEY` | No | _(none)_ | Protects the dashboard and all read endpoints. Skip for local dev. Set when the proxy is exposed on a server — you choose the value. |
+| `AGENTLEDGER_API_KEY` | No | _(none)_ | Protects the dashboard and all read endpoints. Skip for local dev. Set when the proxy is on a server — you choose the value. |
 
-**Cost budgets** — block calls that would exceed a spend limit (returns HTTP 429):
+**Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -187,7 +212,7 @@ open http://localhost:8000/export/run-1/report
 | `AGENTLEDGER_BUDGET_AGENT` | _(none)_ | Max USD per `agent_name` per calendar day (UTC). |
 | `AGENTLEDGER_BUDGET_DAILY` | _(none)_ | Max USD total across all calls per calendar day (UTC). |
 
-**Rate limits** — block calls that exceed request frequency (returns HTTP 429, resets every 60 seconds):
+**Rate limits** — block calls that exceed request frequency (returns HTTP 429, sliding 60-second window):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -196,7 +221,7 @@ open http://localhost:8000/export/run-1/report
 | `AGENTLEDGER_RATE_LIMIT_AGENT_RPM` | _(none)_ | Max requests per minute per `agent_name`. |
 | `AGENTLEDGER_RATE_LIMIT_USER_RPM` | _(none)_ | Max requests per minute per `user_id`. |
 
-**Alerts** — fire a webhook when a threshold is breached (does not block, see [Alerts](#alerts)):
+**Alerts** — POST to your webhook when a threshold is breached (does not block calls — see [Alerts](#alerts)):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -211,13 +236,13 @@ open http://localhost:8000/export/run-1/report
 ### Common startup examples
 
 ```bash
-# Local dev — OpenAI
+# Local dev — OpenAI (default)
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com uv run python -m agentledger.proxy
 
 # Local dev — Anthropic
 AGENTLEDGER_UPSTREAM_URL=https://api.anthropic.com uv run python -m agentledger.proxy
 
-# Local dev — LiteLLM gateway
+# Local dev — LiteLLM gateway (any model)
 AGENTLEDGER_UPSTREAM_URL=http://localhost:4000 uv run python -m agentledger.proxy
 
 # Production — Postgres + auth + budgets + rate limits + alerts
@@ -232,12 +257,9 @@ AGENTLEDGER_ALERT_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz \
 AGENTLEDGER_ALERT_COST_PER_CALL=0.50 \
 AGENTLEDGER_ALERT_DAILY_SPEND=15.00 \
 uv run python -m agentledger.proxy
-
-# Docker Compose (SQLite, edit docker-compose.yml to switch to Postgres)
-AGENTLEDGER_UPSTREAM_URL=https://api.openai.com docker compose up
 ```
 
-When `AGENTLEDGER_API_KEY` is set:
+When `AGENTLEDGER_API_KEY` is set, pass it to access protected endpoints:
 ```bash
 # Header
 curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/session/run-1
@@ -260,8 +282,8 @@ Pass these from your agent on each LLM call. All optional. They enrich captured 
 | `x-agentledger-app-id` | _(none)_ | Application name or ID. Useful when multiple apps share one proxy. |
 | `x-agentledger-parent-action-id` | _(none)_ | The `action_id` of the call that spawned this one. Builds the nested agent call graph. |
 | `x-agentledger-environment` | `development` | `production`, `staging`, or `development`. Shown in the dashboard. |
-| `x-agentledger-handoff-from` | _(none)_ | Agent handing off control. Renders as a directed edge in the Flow DAG. |
-| `x-agentledger-handoff-to` | _(none)_ | Agent receiving control. Renders as a directed edge in the Flow DAG. |
+| `x-agentledger-handoff-from` | _(none)_ | Agent handing off control (e.g. `"orchestrator"`). Renders as a directed edge in the Flow DAG. |
+| `x-agentledger-handoff-to` | _(none)_ | Agent receiving control (e.g. `"researcher"`). Renders as a directed edge in the Flow DAG. |
 
 **Single agent — fully annotated:**
 ```python
@@ -282,7 +304,9 @@ client = OpenAI(
 
 **Multi-agent system — tracking handoffs:**
 ```python
-# Orchestrator makes a call, then hands off to researcher
+from openai import OpenAI
+
+# Orchestrator
 orchestrator_client = OpenAI(
     base_url="http://localhost:8000/v1",
     api_key="your-openai-key",
@@ -292,7 +316,7 @@ orchestrator_client = OpenAI(
     },
 )
 
-# Researcher picks up the task
+# Researcher (receives handoff from orchestrator)
 researcher_client = OpenAI(
     base_url="http://localhost:8000/v1",
     api_key="your-openai-key",
@@ -311,7 +335,7 @@ The Flow tab renders `orchestrator → researcher` as a DAG with cost and latenc
 
 ## Alerts
 
-AgentLedger fires a `POST` to your webhook URL when a threshold is breached. You connect it to whatever you already use — Slack, PagerDuty, Discord, email, or a custom endpoint. AgentLedger sends the payload; integration is on your side.
+AgentLedger fires a `POST` to your webhook URL when a threshold is breached. You connect it to whatever you already use — Slack, PagerDuty, Discord, email, or a custom endpoint. AgentLedger sends the payload; the integration is on your side.
 
 **Payload format:**
 ```json
@@ -332,21 +356,81 @@ AgentLedger fires a `POST` to your webhook URL when a threshold is breached. You
 | Type | Triggered when |
 |---|---|
 | `high_cost` | A single call exceeds `AGENTLEDGER_ALERT_COST_PER_CALL` |
-| `high_latency` | A single call exceeds `AGENTLEDGER_ALERT_LATENCY_MS` |
+| `high_latency` | A single call takes longer than `AGENTLEDGER_ALERT_LATENCY_MS` |
 | `high_error_rate` | Session error rate exceeds `AGENTLEDGER_ALERT_ERROR_RATE` |
 | `daily_spend` | Daily total spend crosses `AGENTLEDGER_ALERT_DAILY_SPEND` |
 
-**Difference between alerts and budgets:**
-- **Budgets** block the call before it reaches the LLM — the agent gets HTTP 429
-- **Alerts** fire after a call completes — the call goes through, you get notified
+**Budgets vs alerts:**
+- **Budgets** (`AGENTLEDGER_BUDGET_*`) — block the call before it reaches the LLM. Agent gets HTTP 429.
+- **Alerts** (`AGENTLEDGER_ALERT_*`) — the call goes through, you get notified after.
 
-**Slack** — create an [Incoming Webhook](https://api.slack.com/messaging/webhooks) and point `AGENTLEDGER_ALERT_WEBHOOK_URL` at it. The `message` field contains the human-readable text.
+**Slack** — create an [Incoming Webhook](https://api.slack.com/messaging/webhooks) and point `AGENTLEDGER_ALERT_WEBHOOK_URL` at it.
 
 **PagerDuty** — use the [Events API v2](https://developer.pagerduty.com/docs/events-api-v2/) URL or a thin adapter that maps `type` → PagerDuty severity.
 
 **Discord** — use a Discord channel webhook URL directly.
 
-**Custom** — any HTTP endpoint that accepts a JSON POST works.
+**Custom** — any HTTP endpoint that accepts a JSON `POST`.
+
+---
+
+## OpenTelemetry export
+
+AgentLedger can emit every intercepted LLM call as an OTel span to any OTLP-compatible collector: Grafana Tempo, Jaeger, Honeycomb, Datadog, Dynatrace, or any vendor that supports OTLP/HTTP.
+
+**Install the extra:**
+```bash
+pip install "agentic-ledger[otel]"
+# or
+uv add "agentic-ledger[otel]"
+```
+
+**Configure:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENTLEDGER_OTEL_ENDPOINT` | _(none)_ | OTLP/HTTP base URL, e.g. `http://localhost:4318`. OTel export is disabled when not set. |
+| `AGENTLEDGER_OTEL_SERVICE_NAME` | `agentledger` | Value of `service.name` in the emitted resource. |
+| `AGENTLEDGER_OTEL_HEADERS` | _(none)_ | Comma-separated `key=value` pairs for auth headers, e.g. `x-honeycomb-team=abc123,x-honeycomb-dataset=llm`. |
+
+**Example — Grafana Tempo:**
+```bash
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
+AGENTLEDGER_OTEL_ENDPOINT=http://localhost:4318 \
+AGENTLEDGER_OTEL_SERVICE_NAME=my-agent \
+uv run python -m agentledger.proxy
+```
+
+**Example — Honeycomb:**
+```bash
+AGENTLEDGER_OTEL_ENDPOINT=https://api.honeycomb.io \
+AGENTLEDGER_OTEL_HEADERS=x-honeycomb-team=YOUR_API_KEY,x-honeycomb-dataset=llm-traces \
+uv run python -m agentledger.proxy
+```
+
+**Span attributes emitted (GenAI semantic conventions):**
+
+| Attribute | Source |
+|---|---|
+| `gen_ai.system` | Provider (`openai` / `anthropic`) |
+| `gen_ai.operation.name` | Always `chat` |
+| `gen_ai.request.model` | Model ID |
+| `gen_ai.request.temperature` | If set |
+| `gen_ai.request.max_tokens` | If set |
+| `gen_ai.usage.input_tokens` | Tokens in |
+| `gen_ai.usage.output_tokens` | Tokens out |
+| `gen_ai.response.finish_reasons` | Stop reason |
+| `agentledger.action_id` | Unique call ID |
+| `agentledger.session_id` | Run grouping |
+| `agentledger.agent_name` | From header |
+| `agentledger.user_id` | From header |
+| `agentledger.cost_usd` | Estimated cost |
+| `agentledger.latency_ms` | End-to-end latency |
+| `agentledger.environment` | From header |
+| `agentledger.handoff_from` / `agentledger.handoff_to` | Agent handoffs |
+| `http.status_code` | HTTP status from upstream |
+
+Spans are grouped into traces by `session_id` — all calls in a session appear as one trace in your backend. Parent-child relationships follow `x-agentledger-parent-action-id`. Error spans (`status_code != 200`) are marked with `StatusCode.ERROR`.
 
 ---
 
@@ -363,6 +447,35 @@ open http://localhost:8000/export/run-1/report
 ```
 
 The JSON export includes a `sha256` hash of the calls array. Recipients can verify the export has not been modified after generation.
+
+---
+
+## Releasing
+
+Tagging a version triggers the full release pipeline automatically:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+This runs three jobs:
+1. **Docker** — builds and pushes `ghcr.io/shekharBhardwaj/agentledger:0.2.0` and `:latest` to GHCR
+2. **PyPI** — builds and publishes `agentic-ledger==0.2.0` to PyPI using trusted publishing (no API token needed)
+3. **GitHub Release** — creates a release with auto-generated changelog from commit messages
+
+**First-time PyPI setup** (one time only):
+1. Go to [pypi.org/manage/account/publishing](https://pypi.org/manage/account/publishing/)
+2. Add a new pending publisher:
+   ```
+   PyPI project name:  agentic-ledger
+   Owner:              ShekharBhardwaj
+   Repository:         AgentLedger
+   Workflow name:      release.yml
+   Environment name:   pypi
+   ```
+3. Create a `pypi` environment in GitHub: repo → Settings → Environments → New environment → name it `pypi`
+4. That's it — no secrets needed
 
 ---
 
