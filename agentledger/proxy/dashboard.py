@@ -23,7 +23,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
 
   header {
-    padding: 14px 20px;
+    padding: 12px 20px;
     border-bottom: 1px solid #1e1e1e;
     display: flex;
     align-items: center;
@@ -31,7 +31,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     flex-shrink: 0;
   }
   header h1 { font-size: 15px; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
-  header .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; transition: background 0.3s; flex-shrink: 0; }
+  .live-dot.connected { background: #22c55e; }
+
+  .search-wrap {
+    margin-left: auto;
+    position: relative;
+  }
+  .search-input {
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    color: #e0e0e0;
+    font-size: 12px;
+    padding: 5px 10px 5px 28px;
+    border-radius: 6px;
+    width: 220px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .search-input:focus { border-color: #444; }
+  .search-input::placeholder { color: #444; }
+  .search-icon {
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #444;
+    font-size: 12px;
+    pointer-events: none;
+  }
 
   .layout {
     display: flex;
@@ -108,6 +136,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-top: 3px;
     display: flex;
     gap: 8px;
+    flex-wrap: wrap;
   }
   .session-meta span { display: flex; align-items: center; gap: 3px; }
 
@@ -117,6 +146,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: #444;
     font-size: 13px;
     line-height: 1.6;
+  }
+
+  /* Search results */
+  .search-result-item {
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    border: 1px solid transparent;
+    transition: background 0.1s;
+  }
+  .search-result-item:hover { background: #141414; }
+  .search-result-model {
+    font-size: 12px;
+    font-weight: 500;
+    color: #60a5fa;
+    font-family: "SF Mono", "Fira Code", monospace;
+  }
+  .search-result-snippet {
+    font-size: 11px;
+    color: #555;
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Detail panel */
@@ -150,6 +204,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .detail-stats strong { color: #999; }
 
+  .export-btn {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+  }
+  .export-link {
+    font-size: 11px;
+    color: #666;
+    text-decoration: none;
+    border: 1px solid #2a2a2a;
+    padding: 3px 8px;
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .export-link:hover { border-color: #444; color: #ccc; }
+
   .detail-body {
     flex: 1;
     overflow-y: auto;
@@ -176,6 +246,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 12px;
     overflow: hidden;
   }
+  .call-card.call-error { border-color: #3a1a1a; }
   .call-card-header {
     padding: 10px 14px;
     display: flex;
@@ -184,6 +255,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-bottom: 1px solid #1a1a1a;
     background: #0d0d0d;
   }
+  .call-card.call-error .call-card-header { background: #130808; }
   .call-number {
     font-size: 11px;
     color: #444;
@@ -201,6 +273,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     gap: 6px;
     margin-left: auto;
     align-items: center;
+    flex-wrap: wrap;
   }
   .badge {
     font-size: 11px;
@@ -213,6 +286,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .badge-stop    { background: #2a1a1a; color: #f87171; }
   .badge-stop.end_turn, .badge-stop.stop { background: #1a2a1a; color: #4ade80; }
   .badge-stop.tool_calls, .badge-stop.tool_use { background: #2a2a1a; color: #fbbf24; }
+  .badge-cost    { background: #1a2510; color: #86efac; }
+  .badge-error   { background: #3a1010; color: #f87171; }
 
   .call-card-body { padding: 12px 14px; }
 
@@ -236,6 +311,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-top: 12px;
   }
   .section-label:first-of-type { margin-top: 0; }
+  .section-label.error-label { color: #7f1d1d; }
 
   .message-bubble {
     background: #0d0d0d;
@@ -254,6 +330,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .message-bubble.system-prompt { color: #888; font-style: italic; border-color: #252525; }
   .message-bubble.output { color: #e0e0e0; border-color: #2a2a2a; }
+  .message-bubble.error-bubble { color: #f87171; border-color: #3a1a1a; background: #130808; }
 
   .tool-call {
     background: #0d0d0d;
@@ -270,6 +347,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 4px;
   }
   .tool-args {
+    color: #666;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .tool-result {
+    background: #0d1a0d;
+    border: 1px solid #1a3a1a;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  .tool-result-id {
+    font-family: "SF Mono", "Fira Code", monospace;
+    color: #4ade80;
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+  .tool-result-content {
     color: #666;
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 11px;
@@ -300,43 +399,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-family: "SF Mono", "Fira Code", monospace;
   }
   .handoff-arrow { color: #7c3aed; }
-
-  .tool-result {
-    background: #0d1a0d;
-    border: 1px solid #1a3a1a;
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 4px;
-    font-size: 12px;
-  }
-  .tool-result-id {
-    font-family: "SF Mono", "Fira Code", monospace;
-    color: #4ade80;
-    font-size: 10px;
-    margin-bottom: 4px;
-  }
-  .tool-result-content {
-    color: #666;
-    font-family: "SF Mono", "Fira Code", monospace;
-    font-size: 11px;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .badge-cost { background: #1a2510; color: #86efac; }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="dot"></div>
+  <div class="live-dot" id="live-dot"></div>
   <h1>AgentLedger</h1>
+  <div class="search-wrap">
+    <span class="search-icon">⌕</span>
+    <input class="search-input" id="search-input" type="text"
+           placeholder="Search prompts, outputs, agents…" autocomplete="off">
+  </div>
 </header>
 
 <div class="layout">
   <div class="sessions-panel">
     <div class="panel-header">
-      Sessions
+      <span id="panel-title">Sessions</span>
       <button class="refresh-btn" onclick="loadSessions()">Refresh</button>
     </div>
     <div class="sessions-list" id="sessions-list">
@@ -345,8 +425,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="detail-panel">
-    <div class="detail-header" id="detail-header">
-    </div>
+    <div class="detail-header" id="detail-header"></div>
     <div class="detail-body" id="detail-body">
       <div class="placeholder">Select a session to inspect</div>
     </div>
@@ -356,6 +435,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <script>
 let activeSessionId = null;
 let sessionRefreshTimer = null;
+let searchDebounce = null;
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -374,7 +454,7 @@ function ms(val) {
 }
 
 function cost(val) {
-  if (val == null) return null;
+  if (val == null || val === 0) return null;
   if (val < 0.001) return '<$0.001';
   return '$' + val.toFixed(4);
 }
@@ -407,19 +487,105 @@ function lastUserMessage(messages) {
 }
 
 function escHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (str == null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── WebSocket (live updates) ──────────────────────────────────────────────────
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const dot = document.getElementById('live-dot');
+
+  ws.onopen = () => dot.classList.add('connected');
+  ws.onclose = () => {
+    dot.classList.remove('connected');
+    setTimeout(connectWS, 3000); // reconnect
+  };
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'call') {
+      // Refresh session list silently
+      loadSessions(true);
+      // If the new call belongs to the active session, refresh it too
+      if (data.session_id && data.session_id === activeSessionId) {
+        loadSession(activeSessionId, true);
+      }
+    }
+  };
+
+  // Keep-alive ping every 25s
+  setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 25000);
+}
+
+// ── Search ───────────────────────────────────────────────────────────────────
+
+document.getElementById('search-input').addEventListener('input', (e) => {
+  clearTimeout(searchDebounce);
+  const q = e.target.value.trim();
+  if (!q) {
+    document.getElementById('panel-title').textContent = 'Sessions';
+    loadSessions();
+    return;
+  }
+  searchDebounce = setTimeout(() => doSearch(q), 300);
+});
+
+async function doSearch(q) {
+  document.getElementById('panel-title').textContent = 'Search results';
+  const el = document.getElementById('sessions-list');
+  el.innerHTML = '<div class="empty-state">Searching…</div>';
+  try {
+    const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+    const results = await res.json();
+    if (!results.length) {
+      el.innerHTML = '<div class="empty-state">No results.</div>';
+      return;
+    }
+    el.innerHTML = results.map(r => {
+      const snippet = r.content || lastUserMessage(r.messages) || '';
+      return `
+        <div class="search-result-item" onclick="showSearchResult('${escHtml(r.action_id)}', '${escHtml(r.session_id || '')}')">
+          <div class="search-result-model">${escHtml(r.model_id)}</div>
+          <div class="search-result-snippet">${escHtml(snippet.slice(0, 80))}</div>
+          <div class="session-meta"><span>${escHtml(r.agent_name || '')}</span><span>${timeAgo(r.timestamp)}</span></div>
+        </div>
+      `;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div class="empty-state">Search failed.</div>';
+  }
+}
+
+async function showSearchResult(actionId, sessionId) {
+  if (sessionId) {
+    await loadSession(sessionId);
+    // Scroll to the specific call card
+    setTimeout(() => {
+      const el = document.getElementById('call-' + actionId);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 300);
+  } else {
+    // No session — fetch and show the single call
+    const res = await fetch('/explain/' + actionId);
+    if (!res.ok) return;
+    const call = await res.json();
+    document.getElementById('detail-header').innerHTML =
+      `<span class="detail-session-id">${escHtml(call.model_id)}</span>`;
+    document.getElementById('detail-body').innerHTML = renderCall(call, 1);
+  }
 }
 
 // ── Sessions list ────────────────────────────────────────────────────────────
 
-async function loadSessions() {
+async function loadSessions(silent = false) {
   const el = document.getElementById('sessions-list');
   try {
     const res = await fetch('/api/sessions');
     const sessions = await res.json();
     if (!sessions.length) {
-      el.innerHTML = '<div class="empty-state">No sessions yet.<br>Make an LLM call through the proxy to get started.</div>';
+      if (!silent) el.innerHTML = '<div class="empty-state">No sessions yet.<br>Make an LLM call through the proxy to get started.</div>';
       return;
     }
     el.innerHTML = sessions.map(s => {
@@ -436,9 +602,10 @@ async function loadSessions() {
         </div>
         ${s.agent_name ? `<div class="session-meta"><span>${escHtml(s.agent_name)}</span></div>` : ''}
       </div>
-    `}).join('');
+      `;
+    }).join('');
   } catch(e) {
-    el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
+    if (!silent) el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
   }
 }
 
@@ -446,7 +613,6 @@ async function loadSessions() {
 
 async function loadSession(sessionId, silent = false) {
   if (sessionId !== activeSessionId) {
-    // New session selected — clear refresh timer and reset scroll
     if (sessionRefreshTimer) { clearInterval(sessionRefreshTimer); sessionRefreshTimer = null; }
     activeSessionId = sessionId;
     document.querySelectorAll('.session-item').forEach(el => {
@@ -456,7 +622,6 @@ async function loadSession(sessionId, silent = false) {
     body.innerHTML = '<div class="placeholder">Loading…</div>';
     document.getElementById('detail-header').innerHTML =
       `<span class="detail-session-id">${escHtml(sessionId)}</span>`;
-    // Start 5s auto-refresh for selected session
     sessionRefreshTimer = setInterval(() => loadSession(activeSessionId, true), 5000);
   }
 
@@ -472,19 +637,23 @@ async function loadSession(sessionId, silent = false) {
     const totalIn = calls.reduce((s, c) => s + (c.tokens_in || 0), 0);
     const totalOut = calls.reduce((s, c) => s + (c.tokens_out || 0), 0);
     const totalCost = calls.reduce((s, c) => s + (c.cost_usd || 0), 0);
+    const errorCount = calls.filter(c => (c.status_code || 200) !== 200).length;
     const c = cost(totalCost || null);
 
     header.innerHTML = `
       <span class="detail-session-id">${escHtml(sessionId)}</span>
       <div class="detail-stats">
-        <span><strong>${calls.length}</strong> calls</span>
+        <span><strong>${calls.length}</strong> calls${errorCount ? ` <span style="color:#f87171">(${errorCount} error${errorCount>1?'s':''})</span>` : ''}</span>
         <span><strong>${ms(totalMs)}</strong> total</span>
-        <span><strong>${totalIn}</strong> in / <strong>${totalOut}</strong> out tokens</span>
+        <span><strong>${totalIn}</strong> / <strong>${totalOut}</strong> tokens</span>
         ${c ? `<span><strong>${c}</strong></span>` : ''}
+      </div>
+      <div class="export-btn">
+        <a class="export-link" href="/export/${encodeURIComponent(sessionId)}" download>↓ JSON</a>
+        <a class="export-link" href="/export/${encodeURIComponent(sessionId)}/report" target="_blank">Report</a>
       </div>
     `;
 
-    // Preserve scroll position on silent refresh
     const scrollTop = silent ? body.scrollTop : 0;
     body.innerHTML = calls.map((call, i) => renderCall(call, i + 1)).join('');
     body.scrollTop = scrollTop;
@@ -494,9 +663,11 @@ async function loadSession(sessionId, silent = false) {
 }
 
 function renderCall(call, n) {
+  const isError = (call.status_code || 200) !== 200;
   const stopClass = (call.stop_reason || '').replace('_', '-');
   const input = lastUserMessage(call.messages);
   const hasTools = call.tool_calls && call.tool_calls.length > 0;
+  const callCost = cost(call.cost_usd);
 
   const metaItems = [
     call.agent_name ? `<div class="meta-item"><span class="meta-label">Agent</span><span class="meta-value">${escHtml(call.agent_name)}</span></div>` : '',
@@ -517,6 +688,19 @@ function renderCall(call, n) {
     <div class="message-bubble">${escHtml(input)}</div>
   ` : '';
 
+  const toolResultsSection = (call.tool_results && call.tool_results.length > 0) ? `
+    <div class="section-label">Tool results</div>
+    ${call.tool_results.map(tr => `
+      <div class="tool-result">
+        <div class="tool-result-id">${escHtml(tr.tool_call_id || tr.tool_use_id || '?')}</div>
+        <div class="tool-result-content">${escHtml(
+          typeof tr.content === 'string' ? tr.content :
+          tr.content ? JSON.stringify(tr.content, null, 2) : ''
+        )}</div>
+      </div>
+    `).join('')}
+  ` : '';
+
   const toolSection = hasTools ? `
     <div class="section-label">Tool calls</div>
     ${call.tool_calls.map(tc => `
@@ -532,6 +716,11 @@ function renderCall(call, n) {
     <div class="message-bubble output">${escHtml(call.content)}</div>
   ` : '';
 
+  const errorSection = isError ? `
+    <div class="section-label error-label">Error — HTTP ${escHtml(call.status_code)}</div>
+    <div class="message-bubble error-bubble">${escHtml(call.error_detail || 'No details captured.')}</div>
+  ` : '';
+
   const parentSection = call.parent_action_id ? `
     <div class="parent-link">
       Triggered by <a onclick="scrollToAction('${escHtml(call.parent_action_id)}')">${shortId(call.parent_action_id)}</a>
@@ -542,27 +731,12 @@ function renderCall(call, n) {
     <div class="handoff-badge">
       ${call.handoff_from ? escHtml(call.handoff_from) : ''}
       ${call.handoff_from && call.handoff_to ? '<span class="handoff-arrow">→</span>' : ''}
-      ${call.handoff_to ? escHtml(call.handoff_to) : (call.handoff_from ? '' : '')}
+      ${call.handoff_to ? escHtml(call.handoff_to) : ''}
     </div>
   ` : '';
 
-  const toolResultsSection = (call.tool_results && call.tool_results.length > 0) ? `
-    <div class="section-label">Tool results</div>
-    ${call.tool_results.map(tr => `
-      <div class="tool-result">
-        <div class="tool-result-id">${escHtml(tr.tool_call_id || tr.tool_use_id || '?')}</div>
-        <div class="tool-result-content">${escHtml(
-          typeof tr.content === 'string' ? tr.content :
-          tr.content ? JSON.stringify(tr.content, null, 2) : ''
-        )}</div>
-      </div>
-    `).join('')}
-  ` : '';
-
-  const callCost = cost(call.cost_usd);
-
   return `
-    <div class="call-card" id="call-${escHtml(call.action_id)}">
+    <div class="call-card ${isError ? 'call-error' : ''}" id="call-${escHtml(call.action_id)}">
       <div class="call-card-header">
         <span class="call-number">${n}</span>
         <span class="call-model">${escHtml(call.model_id)}</span>
@@ -570,7 +744,8 @@ function renderCall(call, n) {
           ${call.latency_ms != null ? `<span class="badge badge-latency">${ms(call.latency_ms)}</span>` : ''}
           ${(call.tokens_in != null && call.tokens_out != null) ? `<span class="badge badge-tokens">${call.tokens_in} / ${call.tokens_out}</span>` : ''}
           ${callCost ? `<span class="badge badge-cost">${callCost}</span>` : ''}
-          ${call.stop_reason ? `<span class="badge badge-stop ${stopClass}">${escHtml(call.stop_reason)}</span>` : ''}
+          ${isError ? `<span class="badge badge-error">HTTP ${escHtml(call.status_code)}</span>` : ''}
+          ${!isError && call.stop_reason ? `<span class="badge badge-stop ${stopClass}">${escHtml(call.stop_reason)}</span>` : ''}
         </div>
       </div>
       <div class="call-card-body">
@@ -581,6 +756,7 @@ function renderCall(call, n) {
         ${toolResultsSection}
         ${toolSection}
         ${outputSection}
+        ${errorSection}
         ${parentSection}
       </div>
     </div>
@@ -596,10 +772,10 @@ function scrollToAction(actionId) {
 
 loadSessions();
 setInterval(loadSessions, 10000);
+connectWS();
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 
 def get_dashboard_html() -> str:

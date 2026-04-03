@@ -30,6 +30,8 @@ _MIGRATION_COLUMNS = [
     ("cost_usd",         "REAL"),
     ("handoff_from",     "TEXT"),
     ("handoff_to",       "TEXT"),
+    ("status_code",      "INTEGER"),
+    ("error_detail",     "TEXT"),
 ]
 
 
@@ -56,6 +58,8 @@ class Store:
         environment: str = "development",
         handoff_from: Optional[str] = None,
         handoff_to: Optional[str] = None,
+        status_code: int = 200,
+        error_detail: Optional[str] = None,
     ) -> None:
         raise NotImplementedError
 
@@ -66,6 +70,18 @@ class Store:
         raise NotImplementedError
 
     async def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def get_session_cost(self, session_id: str) -> float:
+        raise NotImplementedError
+
+    async def get_agent_cost(self, agent_name: str, since_ts: float) -> float:
+        raise NotImplementedError
+
+    async def get_period_cost(self, since_ts: float) -> float:
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -116,7 +132,8 @@ class _SqliteStore(Store):
 
     async def save(self, action_id, req, resp, *, session_id=None, user_id=None,
                    agent_name=None, app_id=None, parent_action_id=None,
-                   environment="development", handoff_from=None, handoff_to=None) -> None:
+                   environment="development", handoff_from=None, handoff_to=None,
+                   status_code=200, error_detail=None) -> None:
         await self._db.execute(
             """
             INSERT INTO llm_calls
@@ -125,8 +142,9 @@ class _SqliteStore(Store):
                  tokens_in, tokens_out, latency_ms,
                  user_id, agent_name, app_id, parent_action_id, environment,
                  system_prompt, temperature, max_tokens,
-                 tool_results, cost_usd, handoff_from, handoff_to)
-            VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?)
+                 tool_results, cost_usd, handoff_from, handoff_to,
+                 status_code, error_detail)
+            VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
             """,
             (
                 action_id, session_id, req.timestamp, req.model_id, req.provider,
@@ -139,6 +157,7 @@ class _SqliteStore(Store):
                 req.system_prompt, req.temperature, req.max_tokens,
                 json.dumps(req.tool_results) if req.tool_results is not None else None,
                 resp.cost_usd, handoff_from, handoff_to,
+                status_code, error_detail,
             ),
         )
         await self._db.commit()
@@ -183,6 +202,44 @@ class _SqliteStore(Store):
         ) as cur:
             rows = await cur.fetchall()
         return [_sqlite_session_row(r) for r in rows]
+
+    async def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        pattern = f"%{query}%"
+        async with self._db.execute(
+            """
+            SELECT * FROM llm_calls
+            WHERE messages LIKE ? OR content LIKE ? OR system_prompt LIKE ?
+               OR agent_name LIKE ? OR user_id LIKE ?
+            ORDER BY timestamp DESC LIMIT ?
+            """,
+            (pattern, pattern, pattern, pattern, pattern, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_sqlite_row(r) for r in rows]
+
+    async def get_session_cost(self, session_id: str) -> float:
+        async with self._db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE session_id = ? AND status_code = 200",
+            (session_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return float(row[0]) if row else 0.0
+
+    async def get_agent_cost(self, agent_name: str, since_ts: float) -> float:
+        async with self._db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE agent_name = ? AND timestamp >= ? AND status_code = 200",
+            (agent_name, since_ts),
+        ) as cur:
+            row = await cur.fetchone()
+        return float(row[0]) if row else 0.0
+
+    async def get_period_cost(self, since_ts: float) -> float:
+        async with self._db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE timestamp >= ? AND status_code = 200",
+            (since_ts,),
+        ) as cur:
+            row = await cur.fetchone()
+        return float(row[0]) if row else 0.0
 
     async def close(self) -> None:
         await self._db.close()
@@ -251,7 +308,8 @@ class _PostgresStore(Store):
 
     async def save(self, action_id, req, resp, *, session_id=None, user_id=None,
                    agent_name=None, app_id=None, parent_action_id=None,
-                   environment="development", handoff_from=None, handoff_to=None) -> None:
+                   environment="development", handoff_from=None, handoff_to=None,
+                   status_code=200, error_detail=None) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -261,14 +319,16 @@ class _PostgresStore(Store):
                      tokens_in, tokens_out, latency_ms,
                      user_id, agent_name, app_id, parent_action_id, environment,
                      system_prompt, temperature, max_tokens,
-                     tool_results, cost_usd, handoff_from, handoff_to)
+                     tool_results, cost_usd, handoff_from, handoff_to,
+                     status_code, error_detail)
                 VALUES
                     ($1,$2,to_timestamp($3),$4,$5,
                      $6::jsonb,$7::jsonb,$8,$9::jsonb,$10,
                      $11,$12,$13,
                      $14,$15,$16,$17,$18,
                      $19,$20,$21,
-                     $22::jsonb,$23,$24,$25)
+                     $22::jsonb,$23,$24,$25,
+                     $26,$27)
                 """,
                 uuid.UUID(action_id),
                 uuid.UUID(session_id) if session_id else None,
@@ -282,6 +342,7 @@ class _PostgresStore(Store):
                 req.system_prompt, req.temperature, req.max_tokens,
                 json.dumps(req.tool_results) if req.tool_results is not None else None,
                 resp.cost_usd, handoff_from, handoff_to,
+                status_code, error_detail,
             )
 
     async def get(self, action_id: str) -> Optional[dict[str, Any]]:
@@ -324,6 +385,48 @@ class _PostgresStore(Store):
                 limit,
             )
         return [_pg_session_row(r) for r in rows]
+
+    async def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        pattern = f"%{query}%"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM llm_calls
+                WHERE messages::text ILIKE $1 OR content ILIKE $1
+                   OR system_prompt ILIKE $1 OR agent_name ILIKE $1 OR user_id ILIKE $1
+                ORDER BY timestamp DESC LIMIT $2
+                """,
+                pattern, limit,
+            )
+        return [_pg_row(r) for r in rows]
+
+    async def get_session_cost(self, session_id: str) -> float:
+        async with self._pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE session_id = $1 AND status_code = 200",
+                uuid.UUID(session_id),
+            )
+        return float(val or 0)
+
+    async def get_agent_cost(self, agent_name: str, since_ts: float) -> float:
+        import datetime as _dt
+        since = _dt.datetime.fromtimestamp(since_ts, tz=_dt.timezone.utc)
+        async with self._pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE agent_name = $1 AND timestamp >= $2 AND status_code = 200",
+                agent_name, since,
+            )
+        return float(val or 0)
+
+    async def get_period_cost(self, since_ts: float) -> float:
+        import datetime as _dt
+        since = _dt.datetime.fromtimestamp(since_ts, tz=_dt.timezone.utc)
+        async with self._pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE timestamp >= $1 AND status_code = 200",
+                since,
+            )
+        return float(val or 0)
 
     async def close(self) -> None:
         await self._pool.close()
