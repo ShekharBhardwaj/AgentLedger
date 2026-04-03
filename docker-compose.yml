@@ -1,0 +1,47 @@
+services:
+
+  # SQLite — zero setup, good for a single machine
+  agentledger:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - AGENTLEDGER_UPSTREAM_URL=${AGENTLEDGER_UPSTREAM_URL:-https://api.openai.com}
+      - AGENTLEDGER_DSN=sqlite:////data/agentledger.db
+      - AGENTLEDGER_API_KEY=${AGENTLEDGER_API_KEY:-}
+      - AGENTLEDGER_BUDGET_SESSION=${AGENTLEDGER_BUDGET_SESSION:-}
+      - AGENTLEDGER_BUDGET_AGENT=${AGENTLEDGER_BUDGET_AGENT:-}
+      - AGENTLEDGER_BUDGET_DAILY=${AGENTLEDGER_BUDGET_DAILY:-}
+
+  # Uncomment below to run with Postgres instead
+  #
+  # agentledger:
+  #   build: .
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - AGENTLEDGER_UPSTREAM_URL=${AGENTLEDGER_UPSTREAM_URL:-https://api.openai.com}
+  #     - AGENTLEDGER_DSN=postgresql://agentledger:agentledger@db/agentledger
+  #     - AGENTLEDGER_API_KEY=${AGENTLEDGER_API_KEY:-}
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #
+  # db:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_DB: agentledger
+  #     POSTGRES_USER: agentledger
+  #     POSTGRES_PASSWORD: agentledger
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U agentledger"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #
+  # volumes:
+  #   pgdata:

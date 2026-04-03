@@ -204,6 +204,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .detail-stats strong { color: #999; }
 
+  .detail-tabs {
+    display: flex;
+    gap: 2px;
+    margin-left: 16px;
+  }
+  .tab-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: #555;
+    background: none;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { color: #999; background: #1a1a1a; }
+  .tab-btn.active { color: #e0e0e0; background: #1e1e1e; }
+
   .export-btn {
     margin-left: auto;
     display: flex;
@@ -219,6 +239,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     transition: all 0.15s;
   }
   .export-link:hover { border-color: #444; color: #ccc; }
+
+  /* Flow DAG */
+  .flow-view {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 32px 20px;
+  }
+  .flow-view svg { overflow: visible; }
+  .flow-empty {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #333;
+    font-size: 13px;
+    text-align: center;
+    line-height: 1.8;
+  }
 
   .detail-body {
     flex: 1;
@@ -429,6 +470,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="detail-body" id="detail-body">
       <div class="placeholder">Select a session to inspect</div>
     </div>
+    <div class="flow-view" id="flow-view" style="display:none">
+      <div class="flow-empty" id="flow-empty">No agent flow data.<br>Pass <code>x-agentledger-agent-name</code> and<br><code>x-agentledger-handoff-from/to</code> headers to visualize the flow.</div>
+      <svg id="flow-svg"></svg>
+    </div>
   </div>
 </div>
 
@@ -436,6 +481,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 let activeSessionId = null;
 let sessionRefreshTimer = null;
 let searchDebounce = null;
+let activeTab = 'calls';
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -648,11 +694,17 @@ async function loadSession(sessionId, silent = false) {
         <span><strong>${totalIn}</strong> / <strong>${totalOut}</strong> tokens</span>
         ${c ? `<span><strong>${c}</strong></span>` : ''}
       </div>
+      <div class="detail-tabs">
+        <button class="tab-btn ${activeTab==='calls'?'active':''}" onclick="switchTab('calls')">Calls</button>
+        <button class="tab-btn ${activeTab==='flow'?'active':''}" onclick="switchTab('flow')">Flow</button>
+      </div>
       <div class="export-btn">
         <a class="export-link" href="/export/${encodeURIComponent(sessionId)}" download>↓ JSON</a>
         <a class="export-link" href="/export/${encodeURIComponent(sessionId)}/report" target="_blank">Report</a>
       </div>
     `;
+
+    renderFlowDAG(calls);
 
     const scrollTop = silent ? body.scrollTop : 0;
     body.innerHTML = calls.map((call, i) => renderCall(call, i + 1)).join('');
@@ -766,6 +818,191 @@ function renderCall(call, n) {
 function scrollToAction(actionId) {
   const el = document.getElementById('call-' + actionId);
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Tab switcher ──────────────────────────────────────────────────────────────
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById('detail-body').style.display = tab === 'calls' ? '' : 'none';
+  document.getElementById('flow-view').style.display  = tab === 'flow'  ? '' : 'none';
+  // Re-render active tab button states
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase() === tab);
+  });
+}
+
+// ── Agent flow DAG ────────────────────────────────────────────────────────────
+
+function renderFlowDAG(calls) {
+  const svg = document.getElementById('flow-svg');
+  const empty = document.getElementById('flow-empty');
+  svg.innerHTML = '';
+
+  // Build node map: agent_name → { calls, totalCost, totalMs, totalIn, totalOut }
+  const nodes = new Map();   // id → node
+  const edges = [];          // { from, to, label }
+
+  const getNode = (name) => {
+    if (!nodes.has(name)) {
+      nodes.set(name, { id: name, calls: 0, totalCost: 0, totalMs: 0, totalIn: 0, totalOut: 0, errors: 0 });
+    }
+    return nodes.get(name);
+  };
+
+  for (const call of calls) {
+    const agent = call.agent_name || '(unknown)';
+    const n = getNode(agent);
+    n.calls++;
+    n.totalCost += call.cost_usd || 0;
+    n.totalMs   += call.latency_ms || 0;
+    n.totalIn   += call.tokens_in || 0;
+    n.totalOut  += call.tokens_out || 0;
+    if ((call.status_code || 200) !== 200) n.errors++;
+
+    if (call.handoff_from && call.handoff_to) {
+      getNode(call.handoff_from);
+      getNode(call.handoff_to);
+      // Avoid duplicate edges
+      const key = `${call.handoff_from}→${call.handoff_to}`;
+      if (!edges.find(e => e.key === key)) {
+        edges.push({ key, from: call.handoff_from, to: call.handoff_to });
+      }
+    }
+  }
+
+  if (nodes.size === 0 || (nodes.size === 1 && edges.length === 0)) {
+    empty.style.display = '';
+    svg.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  svg.style.display = '';
+
+  // ── Layout: topological layers ──────────────────────────────────────────────
+  const nodeIds = [...nodes.keys()];
+  const inDegree = new Map(nodeIds.map(id => [id, 0]));
+  for (const e of edges) inDegree.set(e.to, (inDegree.get(e.to) || 0) + 1);
+
+  // BFS layering
+  const layer = new Map();
+  const queue = nodeIds.filter(id => inDegree.get(id) === 0);
+  queue.forEach(id => layer.set(id, 0));
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head++];
+    for (const e of edges) {
+      if (e.from !== id) continue;
+      const next = e.to;
+      const nextLayer = (layer.get(id) || 0) + 1;
+      if (!layer.has(next) || layer.get(next) < nextLayer) {
+        layer.set(next, nextLayer);
+      }
+      if (!queue.includes(next)) queue.push(next);
+    }
+  }
+  // Nodes not reached (cycles/isolated) go to layer 0
+  nodeIds.forEach(id => { if (!layer.has(id)) layer.set(id, 0); });
+
+  // Group by layer
+  const layerGroups = new Map();
+  for (const [id, l] of layer) {
+    if (!layerGroups.has(l)) layerGroups.set(l, []);
+    layerGroups.get(l).push(id);
+  }
+
+  // ── Dimensions ─────────────────────────────────────────────────────────────
+  const NODE_W = 180, NODE_H = 90, H_GAP = 60, V_GAP = 48;
+  const maxPerLayer = Math.max(...[...layerGroups.values()].map(g => g.length));
+  const layerCount = layerGroups.size;
+  const totalW = layerCount * NODE_W + (layerCount - 1) * H_GAP + 80;
+  const totalH = maxPerLayer * NODE_H + (maxPerLayer - 1) * V_GAP + 80;
+
+  svg.setAttribute('width', totalW);
+  svg.setAttribute('height', totalH);
+
+  // Position nodes
+  const pos = new Map();
+  const sortedLayers = [...layerGroups.keys()].sort((a, b) => a - b);
+  sortedLayers.forEach((l, li) => {
+    const group = layerGroups.get(l);
+    const x = 40 + li * (NODE_W + H_GAP);
+    group.forEach((id, gi) => {
+      const groupH = group.length * NODE_H + (group.length - 1) * V_GAP;
+      const startY = (totalH - groupH) / 2;
+      const y = startY + gi * (NODE_H + V_GAP);
+      pos.set(id, { x, y });
+    });
+  });
+
+  // ── SVG defs ───────────────────────────────────────────────────────────────
+  const defs = `<defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3b3b3b"/>
+    </marker>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>`;
+
+  // ── Draw edges ─────────────────────────────────────────────────────────────
+  const edgeSvg = edges.map(e => {
+    const a = pos.get(e.from), b = pos.get(e.to);
+    if (!a || !b) return '';
+    const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
+    const x2 = b.x,          y2 = b.y + NODE_H / 2;
+    const cx = (x1 + x2) / 2;
+    return `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}"
+      fill="none" stroke="#2a2a2a" stroke-width="2"
+      marker-end="url(#arrow)"/>`;
+  }).join('');
+
+  // ── Draw nodes ─────────────────────────────────────────────────────────────
+  const nodeSvg = nodeIds.map(id => {
+    const n = nodes.get(id);
+    const { x, y } = pos.get(id);
+    const hasError = n.errors > 0;
+    const borderColor = hasError ? '#7f1d1d' : '#2a2a2a';
+    const headerBg  = hasError ? '#1a0808' : '#141414';
+    const c = n.totalCost > 0
+      ? (n.totalCost < 0.001 ? '<$0.001' : '$' + n.totalCost.toFixed(4))
+      : null;
+    const latency = n.totalMs >= 1000
+      ? (n.totalMs / 1000).toFixed(1) + 's'
+      : Math.round(n.totalMs) + 'ms';
+
+    return `
+    <g transform="translate(${x},${y})" style="cursor:pointer" onclick="filterByAgent('${escHtml(id)}')">
+      <rect width="${NODE_W}" height="${NODE_H}" rx="8" fill="#111" stroke="${borderColor}" stroke-width="1.5"/>
+      <rect width="${NODE_W}" height="32" rx="8" fill="${headerBg}" stroke="${borderColor}" stroke-width="1.5"/>
+      <rect y="24" width="${NODE_W}" height="8" fill="${headerBg}"/>
+      <text x="${NODE_W/2}" y="21" text-anchor="middle" fill="${hasError?'#f87171':'#c8b5f5'}"
+            font-size="12" font-weight="600" font-family="SF Mono, Fira Code, monospace">${escHtml(id)}</text>
+      <text x="14" y="52" fill="#666" font-size="10">calls</text>
+      <text x="14" y="65" fill="#e0e0e0" font-size="13" font-weight="600">${n.calls}${hasError ? ` <tspan fill="#f87171" font-size="10">(${n.errors} err)</tspan>` : ''}</text>
+      <text x="${NODE_W/2+8}" y="52" fill="#666" font-size="10">latency</text>
+      <text x="${NODE_W/2+8}" y="65" fill="#4ade80" font-size="12" font-weight="500">${latency}</text>
+      ${c ? `<text x="14" y="82" fill="#86efac" font-size="11">${c}</text>` : ''}
+      <text x="${NODE_W - 10}" y="82" text-anchor="end" fill="#444" font-size="10">${n.totalIn}↑ ${n.totalOut}↓ tok</text>
+    </g>`;
+  }).join('');
+
+  svg.innerHTML = defs + edgeSvg + nodeSvg;
+}
+
+function filterByAgent(agentName) {
+  // Switch to Calls tab and highlight calls from this agent
+  switchTab('calls');
+  document.querySelectorAll('.call-card').forEach(card => {
+    const agentEl = card.querySelector('.meta-value');
+    card.style.opacity = '0.3';
+  });
+  document.querySelectorAll('.call-card').forEach(card => {
+    if (card.innerText.includes(agentName)) card.style.opacity = '1';
+  });
+  // Reset after 2s
+  setTimeout(() => document.querySelectorAll('.call-card').forEach(c => c.style.opacity = '1'), 2000);
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

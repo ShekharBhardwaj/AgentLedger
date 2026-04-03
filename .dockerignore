@@ -1,0 +1,13 @@
+.git
+.gitignore
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.db
+data/
+venv/
+.venv/
+*.egg-info
+dist/
+build/
