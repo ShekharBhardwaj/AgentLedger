@@ -14,7 +14,7 @@ See exactly what your AI agent did and why.
 ## Install
 
 ```bash
-pip install "git+https://github.com/ShekharBhardwaj/AgentLedger.git[proxy]"
+pip install "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
 ```
 
 ---
