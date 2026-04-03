@@ -12,11 +12,24 @@ Reads config from environment variables:
     AGENTLEDGER_BUDGET_DAILY     Max USD total per calendar day (default: none)
 """
 
+import logging
 import os
 
 import uvicorn
 
 from .app import create_app
+
+
+class _QuietFilter(logging.Filter):
+    """Suppress dashboard polling from uvicorn access logs."""
+    _NOISY = ("/api/sessions", "/api/search", "/session/", "/export/", "GET / ", "GET /ws")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(p in msg for p in self._NOISY)
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietFilter())
 
 
 def _float_env(key: str):

@@ -471,7 +471,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="placeholder">Select a session to inspect</div>
     </div>
     <div class="flow-view" id="flow-view" style="display:none">
-      <div class="flow-empty" id="flow-empty">No agent flow data.<br>Pass <code>x-agentledger-agent-name</code> and<br><code>x-agentledger-handoff-from/to</code> headers to visualize the flow.</div>
+      <div class="flow-empty" id="flow-empty">No agent data in this session.<br>Add <code>x-agentledger-agent-name</code> to your LLM calls<br>to see the flow here.</div>
       <svg id="flow-svg"></svg>
     </div>
   </div>
@@ -871,7 +871,7 @@ function renderFlowDAG(calls) {
     }
   }
 
-  if (nodes.size === 0 || (nodes.size === 1 && edges.length === 0)) {
+  if (nodes.size === 0) {
     empty.style.display = '';
     svg.style.display = 'none';
     return;
