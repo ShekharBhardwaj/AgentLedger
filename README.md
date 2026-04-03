@@ -35,6 +35,9 @@ AGENTLEDGER_PG_DSN=postgresql://localhost/agentledger \
 python -m agentledger.proxy
 ```
 
+- `AGENTLEDGER_UPSTREAM_URL` — where to forward LLM requests (OpenAI, Anthropic, or your own gateway)
+- `AGENTLEDGER_PG_DSN` — the Postgres database you created in step 1
+
 The proxy is now running on `http://localhost:8000`.
 
 **3. Point your agent at the proxy**
