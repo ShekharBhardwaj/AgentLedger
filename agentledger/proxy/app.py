@@ -210,7 +210,12 @@ def _response_headers(
     action_id: str | None,
     session_id: str | None,
 ) -> dict:
-    headers = dict(upstream_headers)
+    # httpx auto-decompresses responses, so strip content-encoding to prevent
+    # the client from trying to decompress already-decompressed content.
+    headers = {
+        k: v for k, v in upstream_headers.items()
+        if k.lower() not in ("content-encoding", "transfer-encoding")
+    }
     if action_id:
         headers["x-agentledger-action-id"] = action_id
     if session_id:
