@@ -8,30 +8,38 @@ See exactly what your AI agent did and why.
 
 **1. Install**
 
-Open a terminal and run:
+With `uv` (recommended):
+```bash
+uv add "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
+```
 
+With `pip`:
 ```bash
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
 ```
 
-> Windows: use `venv\Scripts\activate` instead
-
 **2. Start the proxy**
 
-In a new terminal tab, from the same directory (keep this running):
+Open a terminal in your project folder and keep it running:
 
+With `uv`:
+```bash
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com uv run python -m agentledger.proxy
+```
+
+With `pip`:
 ```bash
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com ./venv/bin/python -m agentledger.proxy
 ```
 
-You should see uvicorn start on `http://localhost:8000`.
-Traces are saved to `agentledger.db` in your current directory.
+You should see the server start on `http://localhost:8000`.
+Traces are saved to `agentledger.db` in your project folder.
 
 **3. Point your agent at the proxy**
 
-Two changes: set `base_url` and add a session ID so you can retrieve the trace later.
+Two changes to your existing code — `base_url` and a session ID:
 
 ```python
 from openai import OpenAI
@@ -42,7 +50,7 @@ client = OpenAI(
     default_headers={"x-agentledger-session-id": "run-1"},
 )
 
-# Your agent code is unchanged from here
+# Everything else stays exactly the same
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "What is 2 + 2?"}],
@@ -76,11 +84,11 @@ client = anthropic.Anthropic(
 ## Using Postgres in production?
 
 ```bash
-pip install "agentledger[postgres] @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
+uv add "agentledger[postgres] @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
 
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
 AGENTLEDGER_DSN=postgresql://localhost/agentledger \
-python -m agentledger.proxy
+uv run python -m agentledger.proxy
 ```
 
 ---
