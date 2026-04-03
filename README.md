@@ -4,38 +4,35 @@ See exactly what your AI agent did and why.
 
 ---
 
-## Prerequisites
+## Quick Start
 
-- Python 3.9+
+**1. Install**
 
-That's it. AgentLedger uses SQLite by default — no database setup required.
-
----
-
-## Install
+Open a terminal and run:
 
 ```bash
+python -m venv venv
+source venv/bin/activate
 pip install "agentledger @ git+https://github.com/ShekharBhardwaj/AgentLedger.git"
 ```
 
----
+> Windows: use `venv\Scripts\activate` instead
 
-## Quick Start
+**2. Start the proxy**
 
-**1. Start the proxy**
+In a new terminal tab (keep this running):
 
 ```bash
-AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
-python -m agentledger.proxy
+source venv/bin/activate
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com python -m agentledger.proxy
 ```
 
-- `AGENTLEDGER_UPSTREAM_URL` — where to forward LLM requests (OpenAI, Anthropic, or your own gateway)
+You should see uvicorn start on `http://localhost:8000`.
+Traces are saved to `agentledger.db` in your current directory.
 
-The proxy starts on `http://localhost:8000` and saves traces to `agentledger.db` in your current directory.
+**3. Point your agent at the proxy**
 
-**2. Point your agent at the proxy**
-
-Change one line — the `base_url`:
+Two changes: set `base_url` and add a session ID so you can retrieve the trace later.
 
 ```python
 from openai import OpenAI
@@ -43,49 +40,23 @@ from openai import OpenAI
 client = OpenAI(
     base_url="http://localhost:8000/v1",
     api_key="your-openai-key",
+    default_headers={"x-agentledger-session-id": "run-1"},
 )
 
-# Everything else stays exactly the same
+# Your agent code is unchanged from here
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "What is 2 + 2?"}],
 )
 ```
 
-**3. See what happened**
-
-Every response comes back with an `x-agentledger-action-id` header:
-
-```python
-print(response.headers["x-agentledger-action-id"])
-# → "3f2a1b4c-..."
-```
-
-Retrieve the full trace:
+**4. See what happened**
 
 ```bash
-curl http://localhost:8000/explain/3f2a1b4c-...
+curl http://localhost:8000/session/run-1
 ```
 
----
-
-## Group an agent run into a session
-
-Pass a session ID to link all calls from one run:
-
-```python
-client = OpenAI(
-    base_url="http://localhost:8000/v1",
-    api_key="your-openai-key",
-    default_headers={"x-agentledger-session-id": "my-run-1"},
-)
-```
-
-Retrieve the full decision chain:
-
-```bash
-curl http://localhost:8000/session/my-run-1
-```
+Returns every LLM call in that run — prompts, tool calls, responses, token usage, and timing.
 
 ---
 
@@ -97,6 +68,7 @@ import anthropic
 client = anthropic.Anthropic(
     base_url="http://localhost:8000",
     api_key="your-anthropic-key",
+    default_headers={"x-agentledger-session-id": "run-1"},
 )
 ```
 
@@ -118,7 +90,7 @@ python -m agentledger.proxy
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENTLEDGER_UPSTREAM_URL` | `https://api.openai.com` | Where to forward requests |
+| `AGENTLEDGER_UPSTREAM_URL` | `https://api.openai.com` | Where to forward LLM requests |
 | `AGENTLEDGER_DSN` | `sqlite:///agentledger.db` | Database — SQLite or Postgres |
 | `AGENTLEDGER_PORT` | `8000` | Proxy port |
 
