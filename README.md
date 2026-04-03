@@ -59,11 +59,19 @@ response = client.chat.completions.create(
 
 **4. See what happened**
 
+Open the dashboard in your browser:
+
+```
+http://localhost:8000
+```
+
+Or fetch raw JSON:
+
 ```bash
 curl http://localhost:8000/session/run-1
 ```
 
-Returns every LLM call in that run — prompts, tool calls, responses, token usage, and timing.
+Returns every LLM call in that run — prompts, tool calls, tool results, responses, token usage, cost, and timing.
 
 ---
 
@@ -93,6 +101,23 @@ uv run python -m agentledger.proxy
 
 ---
 
+## Optional headers
+
+Pass these on each LLM call to enrich your traces:
+
+| Header | Description |
+|---|---|
+| `x-agentledger-session-id` | Group calls into a run (e.g. `"run-1"`) |
+| `x-agentledger-user-id` | Which end user triggered this |
+| `x-agentledger-agent-name` | Which agent made this call |
+| `x-agentledger-app-id` | Which application |
+| `x-agentledger-parent-action-id` | Parent call's action ID (for nested agents) |
+| `x-agentledger-environment` | `production` / `staging` / `development` |
+| `x-agentledger-handoff-from` | Agent handing off (e.g. `"orchestrator"`) |
+| `x-agentledger-handoff-to` | Agent receiving the handoff (e.g. `"researcher"`) |
+
+---
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -100,6 +125,15 @@ uv run python -m agentledger.proxy
 | `AGENTLEDGER_UPSTREAM_URL` | `https://api.openai.com` | Where to forward LLM requests |
 | `AGENTLEDGER_DSN` | `sqlite:///agentledger.db` | Database — SQLite or Postgres |
 | `AGENTLEDGER_PORT` | `8000` | Proxy port |
+| `AGENTLEDGER_API_KEY` | _(none)_ | Protect the dashboard and retrieval endpoints |
+
+To secure the dashboard, set `AGENTLEDGER_API_KEY` and pass it as a header or query param:
+
+```bash
+curl -H "x-agentledger-api-key: your-key" http://localhost:8000/session/run-1
+# or
+curl "http://localhost:8000/session/run-1?api_key=your-key"
+```
 
 ---
 

@@ -2,8 +2,10 @@
 Normalize provider-native request/response formats to AgentLedger's
 canonical internal schema.
 
-Canonical request:  { messages, tools, model_id, provider, timestamp }
-Canonical response: { content, tool_calls, stop_reason, tokens_in, tokens_out, latency_ms }
+Canonical request:  { messages, tools, model_id, provider, timestamp,
+                      system_prompt, temperature, max_tokens, tool_results }
+Canonical response: { content, tool_calls, stop_reason, tokens_in,
+                      tokens_out, latency_ms, cost_usd }
 
 Never store provider-native formats as source of truth.
 """
@@ -11,6 +13,8 @@ Never store provider-native formats as source of truth.
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
+
+from .pricing import compute_cost
 
 
 @dataclass
@@ -20,6 +24,10 @@ class CanonicalRequest:
     provider: str
     timestamp: float
     tools: Optional[list[dict]] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    tool_results: Optional[list[dict]] = None  # results fed into this call
 
 
 @dataclass
@@ -30,6 +38,7 @@ class CanonicalResponse:
     tokens_in: Optional[int]
     tokens_out: Optional[int]
     latency_ms: float
+    cost_usd: Optional[float] = None
 
 
 def detect_provider(path: str, model: str) -> str:
@@ -43,13 +52,21 @@ def normalize_request(body: dict, path: str) -> CanonicalRequest:
     provider = detect_provider(path, model)
 
     messages = list(body.get("messages", []))
+    system_prompt: Optional[str] = None
 
-    # Anthropic puts the system prompt as a top-level key, not in messages
+    # Anthropic puts the system prompt as a top-level key
     system = body.get("system")
     if system and provider == "anthropic":
+        system_prompt = system if isinstance(system, str) else None
         messages = [{"role": "system", "content": system}] + messages
+    else:
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    system_prompt = content
+                break
 
-    # Normalize tools: OpenAI uses "tools", older OpenAI used "functions"
     tools: Optional[list[dict]] = body.get("tools") or body.get("functions") or None
 
     return CanonicalRequest(
@@ -58,10 +75,14 @@ def normalize_request(body: dict, path: str) -> CanonicalRequest:
         model_id=model,
         provider=provider,
         timestamp=time.time(),
+        system_prompt=system_prompt,
+        temperature=body.get("temperature"),
+        max_tokens=body.get("max_tokens"),
+        tool_results=_extract_tool_results(messages),
     )
 
 
-def normalize_response(body: dict, latency_ms: float) -> CanonicalResponse:
+def normalize_response(body: dict, latency_ms: float, model_id: str = "") -> CanonicalResponse:
     # OpenAI / LiteLLM format
     choices = body.get("choices")
     if choices:
@@ -80,13 +101,16 @@ def normalize_response(body: dict, latency_ms: float) -> CanonicalResponse:
         ] or None
 
         usage = body.get("usage", {})
+        tokens_in = usage.get("prompt_tokens")
+        tokens_out = usage.get("completion_tokens")
         return CanonicalResponse(
             content=content,
             tool_calls=tool_calls,
             stop_reason=choice.get("finish_reason"),
-            tokens_in=usage.get("prompt_tokens"),
-            tokens_out=usage.get("completion_tokens"),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             latency_ms=latency_ms,
+            cost_usd=compute_cost(model_id, tokens_in, tokens_out),
         )
 
     # Anthropic format
@@ -102,13 +126,16 @@ def normalize_response(body: dict, latency_ms: float) -> CanonicalResponse:
         ] or None
 
         usage = body.get("usage", {})
+        tokens_in = usage.get("input_tokens")
+        tokens_out = usage.get("output_tokens")
         return CanonicalResponse(
             content=text,
             tool_calls=tool_calls,
             stop_reason=body.get("stop_reason"),
-            tokens_in=usage.get("input_tokens"),
-            tokens_out=usage.get("output_tokens"),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             latency_ms=latency_ms,
+            cost_usd=compute_cost(model_id, tokens_in, tokens_out),
         )
 
     return CanonicalResponse(
@@ -119,3 +146,28 @@ def normalize_response(body: dict, latency_ms: float) -> CanonicalResponse:
         tokens_out=None,
         latency_ms=latency_ms,
     )
+
+
+def _extract_tool_results(messages: list[dict]) -> Optional[list[dict]]:
+    """Extract tool execution results from the message history sent to the model."""
+    results = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        # OpenAI: role=tool
+        if msg.get("role") == "tool":
+            results.append({
+                "tool_call_id": msg.get("tool_call_id"),
+                "content": msg.get("content"),
+            })
+        # Anthropic: tool_result blocks inside a user message
+        elif msg.get("role") == "user":
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        results.append({
+                            "tool_use_id": block.get("tool_use_id"),
+                            "content": block.get("content"),
+                        })
+    return results or None

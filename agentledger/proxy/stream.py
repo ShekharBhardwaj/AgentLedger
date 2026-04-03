@@ -13,22 +13,23 @@ import json
 from typing import Optional
 
 from .normalize import CanonicalResponse
+from .pricing import compute_cost
 
 
-def reconstruct_from_sse(body: bytes, latency_ms: float) -> CanonicalResponse:
+def reconstruct_from_sse(body: bytes, latency_ms: float, model_id: str = "") -> CanonicalResponse:
     """Reconstruct a CanonicalResponse from raw SSE bytes."""
     text = body.decode("utf-8", errors="replace")
 
     # Detect format from first meaningful data line
     first_chunk = _first_json_chunk(text)
     if first_chunk and "type" in first_chunk:
-        return _reconstruct_anthropic(text, latency_ms)
-    return _reconstruct_openai(text, latency_ms)
+        return _reconstruct_anthropic(text, latency_ms, model_id)
+    return _reconstruct_openai(text, latency_ms, model_id)
 
 
 # ── OpenAI SSE format ────────────────────────────────────────────────────────
 
-def _reconstruct_openai(text: str, latency_ms: float) -> CanonicalResponse:
+def _reconstruct_openai(text: str, latency_ms: float, model_id: str = "") -> CanonicalResponse:
     text_parts: list[str] = []
     tool_calls: dict[int, dict] = {}  # index → {id, name, arguments}
     stop_reason: Optional[str] = None
@@ -74,12 +75,13 @@ def _reconstruct_openai(text: str, latency_ms: float) -> CanonicalResponse:
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         latency_ms=latency_ms,
+        cost_usd=compute_cost(model_id, tokens_in, tokens_out),
     )
 
 
 # ── Anthropic native SSE format ──────────────────────────────────────────────
 
-def _reconstruct_anthropic(text: str, latency_ms: float) -> CanonicalResponse:
+def _reconstruct_anthropic(text: str, latency_ms: float, model_id: str = "") -> CanonicalResponse:
     text_parts: list[str] = []
     tool_calls: list[dict] = []
     current_tool: Optional[dict] = None
@@ -131,6 +133,7 @@ def _reconstruct_anthropic(text: str, latency_ms: float) -> CanonicalResponse:
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         latency_ms=latency_ms,
+        cost_usd=compute_cost(model_id, tokens_in, tokens_out),
     )
 
 
