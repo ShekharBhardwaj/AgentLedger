@@ -127,13 +127,21 @@ Pass these on each LLM call to enrich your traces:
 | `AGENTLEDGER_PORT` | `8000` | Proxy port |
 | `AGENTLEDGER_API_KEY` | _(none)_ | Protect the dashboard and retrieval endpoints |
 
-To secure the dashboard, set `AGENTLEDGER_API_KEY` and pass it as a header or query param:
+To secure the dashboard, pick any secret string and set it when starting the proxy:
 
 ```bash
-curl -H "x-agentledger-api-key: your-key" http://localhost:8000/session/run-1
-# or
-curl "http://localhost:8000/session/run-1?api_key=your-key"
+AGENTLEDGER_API_KEY=my-secret AGENTLEDGER_UPSTREAM_URL=https://api.openai.com uv run python -m agentledger.proxy
 ```
+
+Then pass it when accessing the dashboard or API:
+
+```bash
+curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/session/run-1
+# or open in browser:
+# http://localhost:8000?api_key=my-secret
+```
+
+Optional — skip it if you're running locally.
 
 ---
 
