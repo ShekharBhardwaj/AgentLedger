@@ -101,45 +101,102 @@ uv run python -m agentledger.proxy
 
 ---
 
-## Optional headers
+## Configuration
 
-Pass these on each LLM call to enrich your traces:
+### Environment variables
 
-| Header | Description |
-|---|---|
-| `x-agentledger-session-id` | Group calls into a run (e.g. `"run-1"`) |
-| `x-agentledger-user-id` | Which end user triggered this |
-| `x-agentledger-agent-name` | Which agent made this call |
-| `x-agentledger-app-id` | Which application |
-| `x-agentledger-parent-action-id` | Parent call's action ID (for nested agents) |
-| `x-agentledger-environment` | `production` / `staging` / `development` |
-| `x-agentledger-handoff-from` | Agent handing off (e.g. `"orchestrator"`) |
-| `x-agentledger-handoff-to` | Agent receiving the handoff (e.g. `"researcher"`) |
+Set these when starting the proxy.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `AGENTLEDGER_UPSTREAM_URL` | **Yes** | `https://api.openai.com` | LLM gateway to forward requests to. Can be OpenAI, Anthropic, LiteLLM, OpenRouter, or any OpenAI-compatible URL. |
+| `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` | Database connection string. SQLite file for local dev, Postgres URL for production. |
+| `AGENTLEDGER_HOST` | No | `0.0.0.0` | Host to bind the proxy to. Use `127.0.0.1` to restrict to localhost only. |
+| `AGENTLEDGER_PORT` | No | `8000` | Port to run the proxy on. |
+| `AGENTLEDGER_API_KEY` | No | _(none)_ | Secret key to protect the dashboard and retrieval endpoints. Skip for local development. Set it when the proxy is exposed on a server. |
+
+**Examples:**
+
+```bash
+# Local dev, OpenAI
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com uv run python -m agentledger.proxy
+
+# Local dev, Anthropic
+AGENTLEDGER_UPSTREAM_URL=https://api.anthropic.com uv run python -m agentledger.proxy
+
+# Local dev, LiteLLM gateway (any model)
+AGENTLEDGER_UPSTREAM_URL=http://localhost:4000 uv run python -m agentledger.proxy
+
+# Custom port
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
+AGENTLEDGER_PORT=9000 \
+uv run python -m agentledger.proxy
+
+# Production — Postgres + auth
+AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
+AGENTLEDGER_DSN=postgresql://user:password@localhost/agentledger \
+AGENTLEDGER_API_KEY=my-secret \
+uv run python -m agentledger.proxy
+```
+
+When `AGENTLEDGER_API_KEY` is set, pass it to access the dashboard or API:
+
+```bash
+# Header
+curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/session/run-1
+
+# Query param (browser)
+http://localhost:8000?api_key=my-secret
+```
 
 ---
 
-## Configuration
+### Request headers
 
-| Variable | Default | Description |
+Pass these from your agent on each LLM call. All are optional.
+
+| Header | Default | Description |
 |---|---|---|
-| `AGENTLEDGER_UPSTREAM_URL` | `https://api.openai.com` | Where to forward LLM requests |
-| `AGENTLEDGER_DSN` | `sqlite:///agentledger.db` | Database — SQLite or Postgres |
-| `AGENTLEDGER_PORT` | `8000` | Proxy port |
-| `AGENTLEDGER_API_KEY` | _(none)_ | Protect the dashboard and retrieval endpoints |
+| `x-agentledger-session-id` | _(none)_ | Groups all calls in a run together. Use a consistent ID per agent execution (e.g. `"run-1"`, a UUID). Without this, calls are stored but not grouped. |
+| `x-agentledger-user-id` | _(none)_ | The end user who triggered this agent run. Useful for per-user auditing. |
+| `x-agentledger-agent-name` | _(none)_ | Name of the agent making this call (e.g. `"researcher"`, `"orchestrator"`). |
+| `x-agentledger-app-id` | _(none)_ | Name or ID of your application. Useful if multiple apps share one proxy. |
+| `x-agentledger-parent-action-id` | _(none)_ | The `action_id` of the call that triggered this one. Used to reconstruct nested agent call graphs. |
+| `x-agentledger-environment` | `development` | Environment this call is from: `production`, `staging`, or `development`. |
+| `x-agentledger-handoff-from` | _(none)_ | Name of the agent handing off control (e.g. `"orchestrator"`). |
+| `x-agentledger-handoff-to` | _(none)_ | Name of the agent receiving control (e.g. `"researcher"`). |
 
-Optional — only needed when the proxy is exposed on a server. Skip it for local development.
+**Fully annotated example:**
 
-If you do set it, pick any secret string and pass it when starting the proxy:
+```python
+from openai import OpenAI
 
-```bash
-AGENTLEDGER_API_KEY=my-secret AGENTLEDGER_UPSTREAM_URL=https://api.openai.com uv run python -m agentledger.proxy
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="your-openai-key",
+    default_headers={
+        "x-agentledger-session-id":   "run-abc123",
+        "x-agentledger-user-id":      "user-42",
+        "x-agentledger-agent-name":   "researcher",
+        "x-agentledger-app-id":       "my-app",
+        "x-agentledger-environment":  "production",
+    },
+)
 ```
 
-Then pass it when accessing the dashboard or API:
+**Handoff example** — when one agent passes control to another:
 
-```bash
-curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/session/run-1
-# or open in browser: http://localhost:8000?api_key=my-secret
+```python
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="your-openai-key",
+    default_headers={
+        "x-agentledger-session-id":   "run-abc123",
+        "x-agentledger-agent-name":   "researcher",
+        "x-agentledger-handoff-from": "orchestrator",
+        "x-agentledger-handoff-to":   "researcher",
+    },
+)
 ```
 
 ---
