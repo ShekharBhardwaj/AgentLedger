@@ -44,6 +44,8 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .dashboard import get_dashboard_html
+from .alerts import AlertConfig, check_and_fire
+from .ratelimit import RateLimitConfig, RateLimiter
 from .export import build_export, render_html_report
 from .mcp import handle_mcp
 from .normalize import CanonicalRequest, CanonicalResponse, normalize_request, normalize_response
@@ -93,9 +95,16 @@ def create_app(
     budget_session: Optional[float] = None,
     budget_agent: Optional[float] = None,
     budget_daily: Optional[float] = None,
+    alert_config: Optional[AlertConfig] = None,
+    rate_limit_config: Optional[RateLimitConfig] = None,
 ) -> FastAPI:
 
     broadcaster = _Broadcaster()
+    _rate_limiter = RateLimiter(rate_limit_config or RateLimitConfig())
+    _alert_config = alert_config or AlertConfig(
+        webhook_url=None, cost_per_call=None,
+        latency_ms=None, error_rate=None, daily_spend=None,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -214,6 +223,17 @@ def create_app(
         action_id = str(uuid.uuid4()) if is_llm_path else None
         meta = _extract_meta(request)
 
+        # ── Rate limit check ─────────────────────────────────────────────────
+        if is_llm_path:
+            rate_error = _rate_limiter.check(
+                meta.get("session_id"), meta.get("agent_name"), meta.get("user_id")
+            )
+            if rate_error:
+                return JSONResponse(
+                    {"error": {"type": "rate_limit_exceeded", "message": rate_error}},
+                    status_code=429,
+                )
+
         # ── Budget check ─────────────────────────────────────────────────────
         if is_llm_path and (budget_session or budget_agent or budget_daily):
             budget_error = await _check_budgets(
@@ -234,7 +254,8 @@ def create_app(
 
         if is_streaming:
             return await _streaming_proxy(
-                request, path, body_bytes, forward_headers, action_id, meta, broadcaster
+                request, path, body_bytes, forward_headers, action_id, meta,
+                broadcaster, _alert_config,
             )
 
         start = time.monotonic()
@@ -270,6 +291,11 @@ def create_app(
                     "session_id": meta.get("session_id"),
                     "status_code": status_code,
                 })
+                await check_and_fire(
+                    _alert_config, request.app.state.store,
+                    canonical_resp, action_id,
+                    meta.get("session_id"), meta.get("agent_name"), status_code,
+                )
             except Exception:
                 pass
 
@@ -291,6 +317,7 @@ async def _streaming_proxy(
     action_id: str,
     meta: dict,
     broadcaster: _Broadcaster,
+    alert_config: Optional[AlertConfig] = None,
 ) -> StreamingResponse:
     client: httpx.AsyncClient = request.app.state.client
     store: Store = request.app.state.store
@@ -338,6 +365,11 @@ async def _streaming_proxy(
                         "session_id": meta.get("session_id"),
                         "status_code": 200,
                     })
+                    if alert_config:
+                        await check_and_fire(
+                            alert_config, store, canonical_resp, action_id,
+                            meta.get("session_id"), meta.get("agent_name"), 200,
+                        )
                 except Exception:
                     pass
         finally:

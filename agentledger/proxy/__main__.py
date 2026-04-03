@@ -17,7 +17,9 @@ import os
 
 import uvicorn
 
+from .alerts import AlertConfig
 from .app import create_app
+from .ratelimit import RateLimitConfig
 
 
 class _QuietFilter(logging.Filter):
@@ -48,6 +50,19 @@ app = create_app(
     budget_session=_float_env("AGENTLEDGER_BUDGET_SESSION"),
     budget_agent=_float_env("AGENTLEDGER_BUDGET_AGENT"),
     budget_daily=_float_env("AGENTLEDGER_BUDGET_DAILY"),
+    rate_limit_config=RateLimitConfig(
+        global_rpm=  int(os.environ["AGENTLEDGER_RATE_LIMIT_RPM"])          if os.environ.get("AGENTLEDGER_RATE_LIMIT_RPM")          else None,
+        session_rpm= int(os.environ["AGENTLEDGER_RATE_LIMIT_SESSION_RPM"])  if os.environ.get("AGENTLEDGER_RATE_LIMIT_SESSION_RPM")  else None,
+        agent_rpm=   int(os.environ["AGENTLEDGER_RATE_LIMIT_AGENT_RPM"])    if os.environ.get("AGENTLEDGER_RATE_LIMIT_AGENT_RPM")    else None,
+        user_rpm=    int(os.environ["AGENTLEDGER_RATE_LIMIT_USER_RPM"])     if os.environ.get("AGENTLEDGER_RATE_LIMIT_USER_RPM")     else None,
+    ),
+    alert_config=AlertConfig(
+        webhook_url=os.environ.get("AGENTLEDGER_ALERT_WEBHOOK_URL"),
+        cost_per_call=_float_env("AGENTLEDGER_ALERT_COST_PER_CALL"),
+        latency_ms=_float_env("AGENTLEDGER_ALERT_LATENCY_MS"),
+        error_rate=_float_env("AGENTLEDGER_ALERT_ERROR_RATE"),
+        daily_spend=_float_env("AGENTLEDGER_ALERT_DAILY_SPEND"),
+    ),
 )
 
 uvicorn.run(app, host=host, port=port)
