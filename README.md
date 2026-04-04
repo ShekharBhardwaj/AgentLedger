@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentic-ledger)](https://pypi.org/project/agentic-ledger/)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/shekharBhardwaj/agentledger)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/shekharbhardwaj/agentledger)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Runtime observability for AI agents — see exactly what your agent did, why it did it, and what it cost.
@@ -34,7 +34,7 @@ With Docker (recommended, no Python required):
 docker run -p 8000:8000 \
   -e AGENTLEDGER_UPSTREAM_URL=https://api.openai.com \
   -v $(pwd)/data:/data \
-  ghcr.io/shekharBhardwaj/agentledger:latest
+  ghcr.io/shekharbhardwaj/agentledger:latest
 ```
 
 Or with docker compose (SQLite by default, Postgres available — see `docker-compose.yml`):
@@ -460,7 +460,7 @@ git push origin v0.2.0
 ```
 
 This runs three jobs:
-1. **Docker** — builds and pushes `ghcr.io/shekharBhardwaj/agentledger:0.2.0` and `:latest` to GHCR
+1. **Docker** — builds and pushes `ghcr.io/shekharbhardwaj/agentledger:0.2.0` and `:latest` to GHCR
 2. **PyPI** — builds and publishes `agentic-ledger==0.2.0` to PyPI using trusted publishing (no API token needed)
 3. **GitHub Release** — creates a release with auto-generated changelog from commit messages
 
