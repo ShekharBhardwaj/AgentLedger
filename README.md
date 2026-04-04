@@ -200,7 +200,7 @@ open http://localhost:8000/export/run-1/report
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `AGENTLEDGER_UPSTREAM_URL` | **Yes** | `https://api.openai.com` | LLM endpoint to forward requests to. Accepts OpenAI, Anthropic, LiteLLM, OpenRouter, or any OpenAI-compatible URL. |
-| `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` | Database. SQLite for local dev, Postgres URL for production. |
+| `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` (Docker: `sqlite:////data/agentledger.db`) | Database. SQLite for local dev, Postgres URL for production. |
 | `AGENTLEDGER_HOST` | No | `0.0.0.0` | Host to bind to. Use `127.0.0.1` to restrict to localhost only. |
 | `AGENTLEDGER_PORT` | No | `8000` | Port to run on. |
 | `AGENTLEDGER_API_KEY` | No | _(none)_ | Protects the dashboard and all read endpoints. Skip for local dev. Set when the proxy is on a server — you choose the value. |
@@ -231,6 +231,14 @@ open http://localhost:8000/export/run-1/report
 | `AGENTLEDGER_ALERT_LATENCY_MS` | _(none)_ | Alert when a single call takes longer than `Xms`. |
 | `AGENTLEDGER_ALERT_ERROR_RATE` | _(none)_ | Alert when session error rate exceeds `X` (e.g. `0.5` = 50%). |
 | `AGENTLEDGER_ALERT_DAILY_SPEND` | _(none)_ | Alert when daily spend crosses `$X`. Unlike budgets, this does not block calls. |
+
+**OpenTelemetry** — emit spans to any OTLP-compatible collector (requires `pip install "agentic-ledger[otel]"` — see [OpenTelemetry export](#opentelemetry-export)):
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENTLEDGER_OTEL_ENDPOINT` | _(none)_ | OTLP/HTTP base URL, e.g. `http://localhost:4318`. OTel export is disabled when not set. |
+| `AGENTLEDGER_OTEL_SERVICE_NAME` | `agentledger` | Value of `service.name` reported to the collector. |
+| `AGENTLEDGER_OTEL_HEADERS` | _(none)_ | Comma-separated `key=value` auth headers, e.g. `x-honeycomb-team=abc123`. |
 
 ---
 
@@ -462,7 +470,7 @@ git push origin v0.2.0
 
 This runs three jobs:
 1. **Docker** — builds and pushes `ghcr.io/shekharbhardwaj/agentledger:{version}` and `:latest` to GHCR
-2. **PyPI** — builds and publishes `agentic-ledger==0.2.0` to PyPI using trusted publishing (no API token needed)
+2. **PyPI** — builds and publishes `agentic-ledger=={version}` to PyPI using trusted publishing (no API token needed)
 3. **GitHub Release** — creates a release with auto-generated changelog from commit messages
 
 **First-time PyPI setup** (one time only):
