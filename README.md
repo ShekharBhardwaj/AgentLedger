@@ -37,7 +37,7 @@ docker run -p 8000:8000 \
   ghcr.io/shekharbhardwaj/agentledger:latest
 ```
 
-Or with docker compose (SQLite by default, Postgres available — see `docker-compose.yml`):
+Or with docker compose (SQLite by default — see `docker-compose.yml`):
 ```bash
 AGENTLEDGER_UPSTREAM_URL=https://api.openai.com docker compose up
 ```
@@ -60,6 +60,7 @@ AGENTLEDGER_UPSTREAM_URL=https://api.openai.com ./venv/bin/python -m agentledger
 > pip install "agentic-ledger[postgres]"
 > AGENTLEDGER_DSN=postgresql://user:password@localhost/agentledger
 > ```
+> Note: the Docker image uses SQLite only. For Postgres with Docker, install via `pip` instead.
 
 > **OpenTelemetry?** Install the extra and set `AGENTLEDGER_OTEL_ENDPOINT`:
 > ```bash
@@ -460,7 +461,7 @@ git push origin v0.2.0
 ```
 
 This runs three jobs:
-1. **Docker** — builds and pushes `ghcr.io/shekharbhardwaj/agentledger:0.2.0` and `:latest` to GHCR
+1. **Docker** — builds and pushes `ghcr.io/shekharbhardwaj/agentledger:{version}` and `:latest` to GHCR
 2. **PyPI** — builds and publishes `agentic-ledger==0.2.0` to PyPI using trusted publishing (no API token needed)
 3. **GitHub Release** — creates a release with auto-generated changelog from commit messages
 
