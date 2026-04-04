@@ -53,7 +53,9 @@ from .normalize import CanonicalRequest, CanonicalResponse, normalize_request, n
 from .store import Store
 from .stream import reconstruct_from_sse
 
-_LLM_PATHS = {"v1/chat/completions", "v1/messages"}
+_DEFAULT_LLM_PATHS = {"v1/chat/completions", "v1/messages", "v1/responses"}
+_extra = os.getenv("AGENTLEDGER_EXTRA_PATHS", "")
+_LLM_PATHS = _DEFAULT_LLM_PATHS | {p.strip() for p in _extra.split(",") if p.strip()}
 
 _AL_HEADERS = {
     "x-agentledger-session-id",
@@ -96,6 +98,7 @@ def create_app(
     budget_session: Optional[float] = None,
     budget_agent: Optional[float] = None,
     budget_daily: Optional[float] = None,
+    budget_action: str = "block",   # "block" | "warn" | "both"
     alert_config: Optional[AlertConfig] = None,
     rate_limit_config: Optional[RateLimitConfig] = None,
 ) -> FastAPI:
@@ -236,16 +239,51 @@ def create_app(
                 )
 
         # ── Budget check ─────────────────────────────────────────────────────
-        if is_llm_path and (budget_session or budget_agent or budget_daily):
+        _budget_warning: Optional[str] = None  # set in warn mode; carried into actual save
+        if is_llm_path and (budget_session is not None or budget_agent is not None or budget_daily is not None):
             budget_error = await _check_budgets(
                 request.app.state.store, meta,
                 budget_session, budget_agent, budget_daily,
             )
             if budget_error:
-                return JSONResponse(
-                    {"error": {"type": "budget_exceeded", "message": budget_error}},
-                    status_code=429,
-                )
+                should_block = budget_action in ("block", "both")
+                should_warn  = budget_action in ("warn",  "both")
+                if should_block:
+                    # Save blocked call with empty response, then reject
+                    try:
+                        canonical_req = normalize_request(json.loads(body_bytes), path)
+                        await request.app.state.store.save(
+                            action_id, canonical_req, _empty_response(0),
+                            status_code=429, error_detail=budget_error, **meta,
+                        )
+                        await broadcaster.broadcast({
+                            "type": "call",
+                            "action_id": action_id,
+                            "session_id": meta.get("session_id"),
+                            "status_code": 429,
+                            "budget_warning": False,
+                        })
+                    except Exception:
+                        pass
+                    return JSONResponse(
+                        {"error": {"type": "budget_exceeded", "message": budget_error}},
+                        status_code=429,
+                    )
+                if should_warn:
+                    # Let call through; tag the actual response on save
+                    _budget_warning = budget_error
+                    if _alert_config and _alert_config.webhook_url:
+                        try:
+                            from .alerts import _fire
+                            await _fire(_alert_config.webhook_url, {
+                                "type": "budget_exceeded",
+                                "message": budget_error,
+                                "action_id": action_id,
+                                "session_id": meta.get("session_id"),
+                                "agent_name": meta.get("agent_name"),
+                            })
+                        except Exception:
+                            pass
 
         forward_headers = {
             k: v for k, v in request.headers.items()
@@ -256,7 +294,7 @@ def create_app(
         if is_streaming:
             return await _streaming_proxy(
                 request, path, body_bytes, forward_headers, action_id, meta,
-                broadcaster, _alert_config,
+                broadcaster, _alert_config, _budget_warning,
             )
 
         start = time.monotonic()
@@ -278,7 +316,7 @@ def create_app(
                     canonical_resp = normalize_response(
                         upstream_resp.json(), latency_ms, canonical_req.model_id
                     )
-                    error_detail = None
+                    error_detail = f"budget_warning: {_budget_warning}" if _budget_warning else None
                 else:
                     canonical_resp = _empty_response(latency_ms)
                     error_detail = _extract_error(upstream_resp)
@@ -295,6 +333,7 @@ def create_app(
                     "action_id": action_id,
                     "session_id": meta.get("session_id"),
                     "status_code": status_code,
+                    "budget_warning": bool(_budget_warning),
                 })
                 await check_and_fire(
                     _alert_config, request.app.state.store,
@@ -323,6 +362,7 @@ async def _streaming_proxy(
     meta: dict,
     broadcaster: _Broadcaster,
     alert_config: Optional[AlertConfig] = None,
+    budget_warning: Optional[str] = None,
 ) -> StreamingResponse:
     client: httpx.AsyncClient = request.app.state.client
     store: Store = request.app.state.store
@@ -360,9 +400,10 @@ async def _streaming_proxy(
                     canonical_resp = reconstruct_from_sse(
                         b"".join(chunks), latency_ms, canonical_req.model_id
                     )
+                    _err = f"budget_warning: {budget_warning}" if budget_warning else None
                     await store.save(
                         action_id, canonical_req, canonical_resp,
-                        status_code=200, **meta,
+                        status_code=200, error_detail=_err, **meta,
                     )
                     emit_span(
                         action_id, canonical_req, canonical_resp,
@@ -373,6 +414,7 @@ async def _streaming_proxy(
                         "action_id": action_id,
                         "session_id": meta.get("session_id"),
                         "status_code": 200,
+                        "budget_warning": bool(budget_warning),
                     })
                     if alert_config:
                         await check_and_fire(
@@ -403,7 +445,7 @@ async def _check_budgets(
     session_id = meta.get("session_id")
     agent_name = meta.get("agent_name")
 
-    if budget_session and session_id:
+    if budget_session is not None and session_id:
         spent = await store.get_session_cost(session_id)
         if spent >= budget_session:
             return (
@@ -411,7 +453,7 @@ async def _check_budgets(
                 f"(current spend: ${spent:.4f}). Session: {session_id}"
             )
 
-    if budget_agent and agent_name:
+    if budget_agent is not None and agent_name:
         since = _today_start_ts()
         spent = await store.get_agent_cost(agent_name, since)
         if spent >= budget_agent:
@@ -420,7 +462,7 @@ async def _check_budgets(
                 f"(current spend: ${spent:.4f}). Agent: {agent_name}"
             )
 
-    if budget_daily:
+    if budget_daily is not None:
         since = _today_start_ts()
         spent = await store.get_period_cost(since)
         if spent >= budget_daily:
@@ -458,9 +500,11 @@ def _extract_error(resp: httpx.Response) -> str:
 
 
 def _extract_meta(request: Request) -> dict:
+    import datetime
     h = request.headers
+    session_id = h.get("x-agentledger-session-id") or f"auto-{datetime.date.today().isoformat()}"
     return {
-        "session_id":       h.get("x-agentledger-session-id"),
+        "session_id":       session_id,
         "user_id":          h.get("x-agentledger-user-id"),
         "agent_name":       h.get("x-agentledger-agent-name"),
         "app_id":           h.get("x-agentledger-app-id"),

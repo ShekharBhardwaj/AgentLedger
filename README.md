@@ -204,6 +204,7 @@ open http://localhost:8000/export/run-1/report
 | `AGENTLEDGER_HOST` | No | `0.0.0.0` | Host to bind to. Use `127.0.0.1` to restrict to localhost only. |
 | `AGENTLEDGER_PORT` | No | `8000` | Port to run on. |
 | `AGENTLEDGER_API_KEY` | No | _(none)_ | Protects the dashboard and all read endpoints. Skip for local dev. Set when the proxy is on a server — you choose the value. |
+| `AGENTLEDGER_EXTRA_PATHS` | No | _(none)_ | Comma-separated additional request paths to capture, e.g. `v1/responses,v1/custom`. Built-in paths (`v1/chat/completions`, `v1/messages`, `v1/responses`) are always captured. |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 
@@ -212,6 +213,7 @@ open http://localhost:8000/export/run-1/report
 | `AGENTLEDGER_BUDGET_SESSION` | _(none)_ | Max USD per `session_id` across its lifetime. |
 | `AGENTLEDGER_BUDGET_AGENT` | _(none)_ | Max USD per `agent_name` per calendar day (UTC). |
 | `AGENTLEDGER_BUDGET_DAILY` | _(none)_ | Max USD total across all calls per calendar day (UTC). |
+| `AGENTLEDGER_BUDGET_ACTION` | `block` | What happens when a budget is exceeded: `block` returns HTTP 429 (call never reaches the LLM), `warn` lets the call through and fires a webhook alert, `both` blocks and fires the webhook. |
 
 **Rate limits** — block calls that exceed request frequency (returns HTTP 429, sliding 60-second window):
 
@@ -340,6 +342,47 @@ researcher_client = OpenAI(
 
 The Flow tab renders `orchestrator → researcher` as a DAG with cost and latency on each node.
 
+**OpenAI Agents SDK (`openai-agents`) — per-agent clients:**
+
+The `openai-agents` SDK uses its own internal OpenAI client. To pass AgentLedger headers you need to create a client per agent using `OpenAIResponsesModel` and set it as the agent's `model`.
+
+```python
+import uuid
+import os
+from openai import AsyncOpenAI
+from agents import Agent
+from agents.models.openai_responses import OpenAIResponsesModel
+
+SESSION_ID = f"run-{uuid.uuid4().hex[:8]}"  # one per execution
+BASE_URL = os.getenv("OPENAI_BASE_URL")      # e.g. http://localhost:8000/v1
+
+def al_model(agent_name: str, model: str = "gpt-4o-mini",
+             handoff_from: str | None = None, handoff_to: str | None = None):
+    """Create a model instance that sends AgentLedger metadata headers."""
+    if not BASE_URL:
+        return model  # proxy not configured — use default client
+    headers = {
+        "x-agentledger-session-id": SESSION_ID,
+        "x-agentledger-agent-name": agent_name,
+    }
+    if handoff_from:
+        headers["x-agentledger-handoff-from"] = handoff_from
+    if handoff_to:
+        headers["x-agentledger-handoff-to"] = handoff_to
+    client = AsyncOpenAI(base_url=BASE_URL, api_key=os.getenv("OPENAI_API_KEY", ""),
+                         default_headers=headers)
+    return OpenAIResponsesModel(model=model, openai_client=client)
+
+planner = Agent(name="PlannerAgent", model=al_model("PlannerAgent", handoff_to="SearchAgent"), ...)
+searcher = Agent(name="SearchAgent",  model=al_model("SearchAgent",  handoff_from="PlannerAgent", handoff_to="WriterAgent"), ...)
+writer   = Agent(name="WriterAgent",  model=al_model("WriterAgent",  handoff_from="SearchAgent",  handoff_to="EmailAgent"), ...)
+emailer  = Agent(name="EmailAgent",   model=al_model("EmailAgent",   handoff_from="WriterAgent"), ...)
+```
+
+Each agent's calls are tagged with its name and pipeline position. The Flow tab renders the full `PlannerAgent → SearchAgent → WriterAgent → EmailAgent` DAG automatically.
+
+> **Why per-agent clients?** `set_default_openai_client()` sets a single global client — fine for single-agent apps, but it can't carry different `agent_name` or `handoff_*` headers per agent in a multi-agent system. Per-agent `OpenAIResponsesModel` instances are the correct approach.
+
 ---
 
 ## Alerts
@@ -368,6 +411,7 @@ AgentLedger fires a `POST` to your webhook URL when a threshold is breached. You
 | `high_latency` | A single call takes longer than `AGENTLEDGER_ALERT_LATENCY_MS` |
 | `high_error_rate` | Session error rate exceeds `AGENTLEDGER_ALERT_ERROR_RATE` |
 | `daily_spend` | Daily total spend crosses `AGENTLEDGER_ALERT_DAILY_SPEND` |
+| `budget_exceeded` | A budget limit is hit and `AGENTLEDGER_BUDGET_ACTION` is `warn` or `both` |
 
 **Budgets vs alerts:**
 - **Budgets** (`AGENTLEDGER_BUDGET_*`) — block the call before it reaches the LLM. Agent gets HTTP 429.
@@ -387,7 +431,7 @@ AgentLedger fires a `POST` to your webhook URL when a threshold is breached. You
 
 AgentLedger can emit every intercepted LLM call as an OTel span to any OTLP-compatible collector: Grafana Tempo, Jaeger, Honeycomb, Datadog, Dynatrace, or any vendor that supports OTLP/HTTP.
 
-**Install the extra:**
+**Install the extra** (Docker image includes OTel — no extra step needed when using Docker):
 ```bash
 pip install "agentic-ledger[otel]"
 # or

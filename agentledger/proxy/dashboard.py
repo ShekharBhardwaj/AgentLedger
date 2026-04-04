@@ -3,6 +3,16 @@ Serves the AgentLedger visual dashboard at GET /.
 Single-file HTML/CSS/JS — no build step, no external dependencies.
 """
 
+import base64
+import pathlib
+
+_MASCOT_B64 = ""
+try:
+    _img = pathlib.Path(__file__).parent / "mascot.jpg"
+    _MASCOT_B64 = base64.b64encode(_img.read_bytes()).decode()
+except Exception:
+    pass
+
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -247,10 +257,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     overflow: auto;
     display: flex;
     align-items: flex-start;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 32px 20px;
   }
-  .flow-view svg { overflow: visible; }
+  .flow-view svg { overflow: visible; display: block; }
   .flow-empty {
     height: 100%;
     display: flex;
@@ -288,7 +298,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     margin-bottom: 12px;
     overflow: hidden;
   }
-  .call-card.call-error { border-color: #3a1a1a; }
+  .call-card.call-error   { border-color: #3a1a1a; }
+  .call-card.call-warning { border-color: #3a2a00; }
   .call-card-header {
     padding: 10px 14px;
     display: flex;
@@ -296,8 +307,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     gap: 10px;
     border-bottom: 1px solid #1a1a1a;
     background: #0d0d0d;
+    cursor: pointer;
+    user-select: none;
   }
-  .call-card.call-error .call-card-header { background: #130808; }
+  .call-card-header:hover { background: #131313; }
+  .call-card.call-error   .call-card-header { background: #130808; }
+  .call-card.call-warning .call-card-header { background: #120900; }
+  .call-toggle {
+    font-size: 10px;
+    color: #444;
+    margin-left: auto;
+    transition: transform 0.15s;
+  }
+  .call-card.collapsed .call-toggle { transform: rotate(-90deg); }
+  .call-card.collapsed .call-card-body { display: none; }
+  .call-card.collapsed .call-card-header { border-bottom: none; }
   .call-number {
     font-size: 11px;
     color: #444;
@@ -447,6 +471,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <header>
   <div class="live-dot" id="live-dot"></div>
+  {mascot_img}
   <h1>AgentLedger</h1>
   <div class="search-wrap">
     <span class="search-icon">⌕</span>
@@ -468,6 +493,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div class="detail-panel">
     <div class="detail-header" id="detail-header"></div>
+    <div id="agent-filter-bar" style="display:none;align-items:center;gap:8px;padding:6px 20px;background:#0d0d0d;border-bottom:1px solid #1e1e1e;font-size:11px;color:#a78bfa;">
+      Showing: <span style="font-weight:600"></span>
+      <button onclick="clearAgentFilter();this.closest('#agent-filter-bar').style.display='none'" style="margin-left:auto;font-size:10px;color:#555;background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:3px;border:1px solid #333">✕ Clear filter</button>
+    </div>
     <div class="detail-body" id="detail-body">
       <div class="placeholder">Select a session to inspect</div>
     </div>
@@ -716,7 +745,8 @@ async function loadSession(sessionId, silent = false) {
 }
 
 function renderCall(call, n) {
-  const isError = (call.status_code || 200) !== 200;
+  const isError   = (call.status_code || 200) !== 200;
+  const isWarning = !isError && (call.error_detail || '').startsWith('budget_warning:');
   const stopClass = (call.stop_reason || '').replace('_', '-');
   const input = lastUserMessage(call.messages);
   const hasTools = call.tool_calls && call.tool_calls.length > 0;
@@ -789,17 +819,20 @@ function renderCall(call, n) {
   ` : '';
 
   return `
-    <div class="call-card ${isError ? 'call-error' : ''}" id="call-${escHtml(call.action_id)}">
-      <div class="call-card-header">
+    <div class="call-card ${isError ? 'call-error' : isWarning ? 'call-warning' : ''}" id="call-${escHtml(call.action_id)}" data-agent="${escHtml(call.agent_name || '')}">
+      <div class="call-card-header" onclick="toggleCallCard(this.closest('.call-card'))">
         <span class="call-number">${n}</span>
         <span class="call-model">${escHtml(call.model_id)}</span>
+        ${call.agent_name ? `<span style="font-size:11px;color:#a78bfa;font-weight:600">${escHtml(call.agent_name)}</span>` : ''}
         <div class="call-badges">
           ${call.latency_ms != null ? `<span class="badge badge-latency">${ms(call.latency_ms)}</span>` : ''}
           ${(call.tokens_in != null && call.tokens_out != null) ? `<span class="badge badge-tokens">${call.tokens_in} / ${call.tokens_out}</span>` : ''}
           ${callCost ? `<span class="badge badge-cost">${callCost}</span>` : ''}
           ${isError ? `<span class="badge badge-error">HTTP ${escHtml(call.status_code)}</span>` : ''}
-          ${!isError && call.stop_reason ? `<span class="badge badge-stop ${stopClass}">${escHtml(call.stop_reason)}</span>` : ''}
+          ${isWarning ? `<span class="badge" style="background:#2a1a00;color:#fbbf24">⚠ budget</span>` : ''}
+          ${!isError && !isWarning && call.stop_reason ? `<span class="badge badge-stop ${stopClass}">${escHtml(call.stop_reason)}</span>` : ''}
         </div>
+        <span class="call-toggle">▼</span>
       </div>
       <div class="call-card-body">
         ${metaItems ? `<div class="call-meta-row">${metaItems}</div>` : ''}
@@ -827,10 +860,18 @@ function switchTab(tab) {
   activeTab = tab;
   document.getElementById('detail-body').style.display = tab === 'calls' ? '' : 'none';
   document.getElementById('flow-view').style.display  = tab === 'flow'  ? '' : 'none';
-  // Re-render active tab button states
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.toggle('active', btn.textContent.toLowerCase() === tab);
   });
+  if (tab !== 'calls') clearAgentFilter();
+  const filterBar = document.getElementById('agent-filter-bar');
+  if (filterBar) filterBar.style.display = 'none';
+}
+
+function filterByAgentAndShowBar(agentName) {
+  filterByAgent(agentName);
+  const bar = document.getElementById('agent-filter-bar');
+  if (bar) { bar.style.display = 'flex'; bar.querySelector('span').textContent = agentName; }
 }
 
 // ── Agent flow DAG ────────────────────────────────────────────────────────────
@@ -846,7 +887,7 @@ function renderFlowDAG(calls) {
 
   const getNode = (name) => {
     if (!nodes.has(name)) {
-      nodes.set(name, { id: name, calls: 0, totalCost: 0, totalMs: 0, totalIn: 0, totalOut: 0, errors: 0 });
+      nodes.set(name, { id: name, calls: 0, totalCost: 0, totalMs: 0, totalIn: 0, totalOut: 0, errors: 0, warnings: 0 });
     }
     return nodes.get(name);
   };
@@ -860,15 +901,19 @@ function renderFlowDAG(calls) {
     n.totalIn   += call.tokens_in || 0;
     n.totalOut  += call.tokens_out || 0;
     if ((call.status_code || 200) !== 200) n.errors++;
+    if ((call.error_detail || '').startsWith('budget_warning:')) n.warnings++;
 
-    if (call.handoff_from && call.handoff_to) {
+    if (call.handoff_from) {
       getNode(call.handoff_from);
+      const key = `${call.handoff_from}→${agent}`;
+      const ex = edges.find(e => e.key === key);
+      if (ex) { ex.count++; } else { edges.push({ key, from: call.handoff_from, to: agent, count: 1 }); }
+    }
+    if (call.handoff_to) {
       getNode(call.handoff_to);
-      // Avoid duplicate edges
-      const key = `${call.handoff_from}→${call.handoff_to}`;
-      if (!edges.find(e => e.key === key)) {
-        edges.push({ key, from: call.handoff_from, to: call.handoff_to });
-      }
+      const key = `${agent}→${call.handoff_to}`;
+      const ex = edges.find(e => e.key === key);
+      if (ex) { ex.count++; } else { edges.push({ key, from: agent, to: call.handoff_to, count: 1 }); }
     }
   }
 
@@ -880,10 +925,27 @@ function renderFlowDAG(calls) {
   empty.style.display = 'none';
   svg.style.display = '';
 
-  // ── Layout: topological layers ──────────────────────────────────────────────
+  // ── Cycle detection: separate forward edges from back-edges ─────────────────
+  // DFS to find back-edges (edges that point to an ancestor in the DFS tree)
+  const visited = new Set(), inStack = new Set();
+  const backEdgeKeys = new Set();
+  function dfs(id) {
+    visited.add(id); inStack.add(id);
+    for (const e of edges) {
+      if (e.from !== id) continue;
+      if (!visited.has(e.to)) { dfs(e.to); }
+      else if (inStack.has(e.to)) { backEdgeKeys.add(e.key); }
+    }
+    inStack.delete(id);
+  }
+  [...nodes.keys()].forEach(id => { if (!visited.has(id)) dfs(id); });
+  const forwardEdges = edges.filter(e => !backEdgeKeys.has(e.key));
+  const backEdges    = edges.filter(e =>  backEdgeKeys.has(e.key));
+
+  // ── Layout: topological layers (forward edges only) ─────────────────────────
   const nodeIds = [...nodes.keys()];
   const inDegree = new Map(nodeIds.map(id => [id, 0]));
-  for (const e of edges) inDegree.set(e.to, (inDegree.get(e.to) || 0) + 1);
+  for (const e of forwardEdges) inDegree.set(e.to, (inDegree.get(e.to) || 0) + 1);
 
   // BFS layering
   const layer = new Map();
@@ -892,7 +954,7 @@ function renderFlowDAG(calls) {
   let head = 0;
   while (head < queue.length) {
     const id = queue[head++];
-    for (const e of edges) {
+    for (const e of forwardEdges) {
       if (e.from !== id) continue;
       const next = e.to;
       const nextLayer = (layer.get(id) || 0) + 1;
@@ -941,6 +1003,9 @@ function renderFlowDAG(calls) {
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
       <path d="M0,0 L8,3 L0,6 Z" fill="#3b3b3b"/>
     </marker>
+    <marker id="arrow-back" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#78350f"/>
+    </marker>
     <filter id="glow">
       <feGaussianBlur stdDeviation="2" result="blur"/>
       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -948,24 +1013,45 @@ function renderFlowDAG(calls) {
   </defs>`;
 
   // ── Draw edges ─────────────────────────────────────────────────────────────
-  const edgeSvg = edges.map(e => {
-    const a = pos.get(e.from), b = pos.get(e.to);
-    if (!a || !b) return '';
-    const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
-    const x2 = b.x,          y2 = b.y + NODE_H / 2;
-    const cx = (x1 + x2) / 2;
-    return `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}"
-      fill="none" stroke="#2a2a2a" stroke-width="2"
-      marker-end="url(#arrow)"/>`;
-  }).join('');
+  const edgeSvg = [
+    // Forward edges — straight bezier
+    ...forwardEdges.map(e => {
+      const a = pos.get(e.from), b = pos.get(e.to);
+      if (!a || !b) return '';
+      const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
+      const x2 = b.x,          y2 = b.y + NODE_H / 2;
+      const cx = (x1 + x2) / 2;
+      return `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}"
+        fill="none" stroke="#2a2a2a" stroke-width="2"
+        marker-end="url(#arrow)"/>`;
+    }),
+    // Back edges (cycles) — arc above nodes, dashed, amber colour with traversal count
+    ...backEdges.map(e => {
+      const a = pos.get(e.from), b = pos.get(e.to);
+      if (!a || !b) return '';
+      const x1 = a.x + NODE_W / 2, y1 = a.y;
+      const x2 = b.x + NODE_W / 2, y2 = b.y;
+      const cy = Math.min(y1, y2) - 60;
+      const mx = (x1 + x2) / 2, my = cy + 10;
+      const label = `↩ ${e.count}×`;
+      const lw = label.length * 6 + 10;
+      return `
+        <path d="M${x1},${y1} C${x1},${cy} ${x2},${cy} ${x2},${y2}"
+          fill="none" stroke="#78350f" stroke-width="1.5" stroke-dasharray="5,3"
+          marker-end="url(#arrow-back)"/>
+        <rect x="${mx - lw/2}" y="${my - 9}" width="${lw}" height="16" rx="4" fill="#1c0f00" stroke="#78350f" stroke-width="1"/>
+        <text x="${mx}" y="${my + 3}" text-anchor="middle" fill="#f97316" font-size="10" font-weight="600">${label}</text>`;
+    }),
+  ].join('');
 
   // ── Draw nodes ─────────────────────────────────────────────────────────────
   const nodeSvg = nodeIds.map(id => {
     const n = nodes.get(id);
     const { x, y } = pos.get(id);
-    const hasError = n.errors > 0;
-    const borderColor = hasError ? '#7f1d1d' : '#2a2a2a';
-    const headerBg  = hasError ? '#1a0808' : '#141414';
+    const hasError   = n.errors > 0;
+    const hasWarning = !hasError && n.warnings > 0;
+    const borderColor = hasError ? '#7f1d1d' : hasWarning ? '#78350f' : '#2a2a2a';
+    const headerBg    = hasError ? '#1a0808' : hasWarning ? '#120900' : '#141414';
     const c = n.totalCost > 0
       ? (n.totalCost < 0.001 ? '<$0.001' : '$' + n.totalCost.toFixed(4))
       : null;
@@ -974,14 +1060,14 @@ function renderFlowDAG(calls) {
       : Math.round(n.totalMs) + 'ms';
 
     return `
-    <g transform="translate(${x},${y})" style="cursor:pointer" onclick="filterByAgent('${escHtml(id)}')">
+    <g transform="translate(${x},${y})" style="cursor:pointer" onclick="filterByAgentAndShowBar('${escHtml(id)}')">
       <rect width="${NODE_W}" height="${NODE_H}" rx="8" fill="#111" stroke="${borderColor}" stroke-width="1.5"/>
       <rect width="${NODE_W}" height="32" rx="8" fill="${headerBg}" stroke="${borderColor}" stroke-width="1.5"/>
       <rect y="24" width="${NODE_W}" height="8" fill="${headerBg}"/>
-      <text x="${NODE_W/2}" y="21" text-anchor="middle" fill="${hasError?'#f87171':'#c8b5f5'}"
+      <text x="${NODE_W/2}" y="21" text-anchor="middle" fill="${hasError?'#f87171':hasWarning?'#fbbf24':'#c8b5f5'}"
             font-size="12" font-weight="600" font-family="SF Mono, Fira Code, monospace">${escHtml(id)}</text>
       <text x="14" y="52" fill="#666" font-size="10">calls</text>
-      <text x="14" y="65" fill="#e0e0e0" font-size="13" font-weight="600">${n.calls}${hasError ? ` <tspan fill="#f87171" font-size="10">(${n.errors} err)</tspan>` : ''}</text>
+      <text x="14" y="65" fill="#e0e0e0" font-size="13" font-weight="600">${n.calls}${hasError ? ` <tspan fill="#f87171" font-size="10">(${n.errors} err)</tspan>` : hasWarning ? ` <tspan fill="#fbbf24" font-size="10">(${n.warnings} ⚠)</tspan>` : ''}</text>
       <text x="${NODE_W/2+8}" y="52" fill="#666" font-size="10">latency</text>
       <text x="${NODE_W/2+8}" y="65" fill="#4ade80" font-size="12" font-weight="500">${latency}</text>
       ${c ? `<text x="14" y="82" fill="#86efac" font-size="11">${c}</text>` : ''}
@@ -992,18 +1078,33 @@ function renderFlowDAG(calls) {
   svg.innerHTML = defs + edgeSvg + nodeSvg;
 }
 
+let _agentFilter = null;
+
 function filterByAgent(agentName) {
-  // Switch to Calls tab and highlight calls from this agent
   switchTab('calls');
-  document.querySelectorAll('.call-card').forEach(card => {
-    const agentEl = card.querySelector('.meta-value');
-    card.style.opacity = '0.3';
+  _agentFilter = agentName;
+  const cards = document.querySelectorAll('.call-card');
+  let first = null;
+  cards.forEach(card => {
+    const match = card.dataset.agent === agentName;
+    card.style.opacity = match ? '1' : '0.2';
+    if (match) {
+      card.classList.remove('collapsed'); // expand matched cards
+      if (!first) first = card;
+    }
   });
-  document.querySelectorAll('.call-card').forEach(card => {
-    if (card.innerText.includes(agentName)) card.style.opacity = '1';
-  });
-  // Reset after 2s
-  setTimeout(() => document.querySelectorAll('.call-card').forEach(c => c.style.opacity = '1'), 2000);
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function clearAgentFilter() {
+  _agentFilter = null;
+  document.querySelectorAll('.call-card').forEach(c => c.style.opacity = '1');
+}
+
+// ── Collapsible call cards ────────────────────────────────────────────────────
+
+function toggleCallCard(card) {
+  card.classList.toggle('collapsed');
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -1017,4 +1118,8 @@ connectWS();
 
 
 def get_dashboard_html() -> str:
-    return DASHBOARD_HTML
+    if _MASCOT_B64:
+        img = f'<img src="data:image/jpeg;base64,{_MASCOT_B64}" style="height:36px;width:36px;object-fit:cover;border-radius:50%;flex-shrink:0;" alt="AgentLedger mascot">'
+    else:
+        img = ""
+    return DASHBOARD_HTML.replace("{mascot_img}", img)

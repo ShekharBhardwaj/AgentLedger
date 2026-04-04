@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install pre-built wheel (built in CI where git tags are available)
 COPY dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
+RUN WHL=$(ls /tmp/*.whl) && pip install --no-cache-dir "${WHL}[otel]" && rm "$WHL"
 
 ENV AGENTLEDGER_HOST=0.0.0.0
 ENV AGENTLEDGER_PORT=8000

@@ -51,6 +51,10 @@ def normalize_request(body: dict, path: str) -> CanonicalRequest:
     model = body.get("model", "unknown")
     provider = detect_provider(path, model)
 
+    # OpenAI Responses API uses `input` instead of `messages`
+    if "responses" in path:
+        return _normalize_responses_request(body, model, provider)
+
     messages = list(body.get("messages", []))
     system_prompt: Optional[str] = None
 
@@ -82,7 +86,40 @@ def normalize_request(body: dict, path: str) -> CanonicalRequest:
     )
 
 
+def _normalize_responses_request(body: dict, model: str, provider: str) -> CanonicalRequest:
+    """Normalize OpenAI Responses API request format."""
+    instructions = body.get("instructions")
+    raw_input = body.get("input", [])
+
+    # input can be a string or a list of message objects
+    if isinstance(raw_input, str):
+        messages = [{"role": "user", "content": raw_input}]
+    else:
+        messages = list(raw_input)
+
+    if instructions:
+        messages = [{"role": "system", "content": instructions}] + messages
+
+    tools: Optional[list[dict]] = body.get("tools") or None
+
+    return CanonicalRequest(
+        messages=messages,
+        tools=tools,
+        model_id=model,
+        provider=provider,
+        timestamp=time.time(),
+        system_prompt=instructions,
+        temperature=body.get("temperature"),
+        max_tokens=body.get("max_output_tokens"),
+        tool_results=_extract_tool_results(messages),
+    )
+
+
 def normalize_response(body: dict, latency_ms: float, model_id: str = "") -> CanonicalResponse:
+    # OpenAI Responses API format
+    if body.get("object") == "response" and "output" in body:
+        return _normalize_responses_response(body, latency_ms, model_id)
+
     # OpenAI / LiteLLM format
     choices = body.get("choices")
     if choices:
@@ -145,6 +182,39 @@ def normalize_response(body: dict, latency_ms: float, model_id: str = "") -> Can
         tokens_in=None,
         tokens_out=None,
         latency_ms=latency_ms,
+    )
+
+
+def _normalize_responses_response(body: dict, latency_ms: float, model_id: str) -> CanonicalResponse:
+    """Normalize OpenAI Responses API response format."""
+    output = body.get("output", [])
+    text: Optional[str] = None
+    tool_calls: list[dict] = []
+
+    for item in output:
+        item_type = item.get("type")
+        if item_type == "message":
+            for block in item.get("content", []):
+                if block.get("type") == "output_text" and text is None:
+                    text = block.get("text")
+        elif item_type == "function_call":
+            tool_calls.append({
+                "id": item.get("call_id") or item.get("id"),
+                "name": item.get("name"),
+                "arguments": item.get("arguments"),
+            })
+
+    usage = body.get("usage", {})
+    tokens_in = usage.get("input_tokens")
+    tokens_out = usage.get("output_tokens")
+    return CanonicalResponse(
+        content=text,
+        tool_calls=tool_calls or None,
+        stop_reason=body.get("status"),
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        latency_ms=latency_ms,
+        cost_usd=compute_cost(model_id, tokens_in, tokens_out),
     )
 
 

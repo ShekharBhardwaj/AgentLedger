@@ -1,6 +1,8 @@
 .git
 .gitignore
 .claude
+.github
+CLAUDE.md
 __pycache__
 *.pyc
 *.pyo
@@ -10,3 +12,9 @@ venv/
 .venv/
 *.egg-info
 build/
+.pytest_cache
+.DS_Store
+*.jpeg
+*.jpg
+tests/
+docker-compose.yml

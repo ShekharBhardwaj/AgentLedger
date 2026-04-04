@@ -61,6 +61,7 @@ source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentledger"]
+artifacts = ["agentledger/proxy/mascot.jpg"]
 
 [tool.hatch.build.targets.sdist]
 include = [

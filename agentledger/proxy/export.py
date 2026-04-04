@@ -27,6 +27,7 @@ def build_export(session_id: str, calls: list[dict[str, Any]]) -> dict[str, Any]
     models = sorted({c["model_id"] for c in calls if c.get("model_id")})
     agents = sorted({c["agent_name"] for c in calls if c.get("agent_name")})
     errors = [c for c in calls if (c.get("status_code") or 200) != 200]
+    warnings = [c for c in calls if (c.get("error_detail") or "").startswith("budget_warning:")]
 
     return {
         "export": {
@@ -40,6 +41,7 @@ def build_export(session_id: str, calls: list[dict[str, Any]]) -> dict[str, Any]
             "ended_at":        calls[-1]["timestamp"] if calls else None,
             "call_count":      len(calls),
             "error_count":     len(errors),
+            "warning_count":   len(warnings),
             "models":          models,
             "agents":          agents,
             "total_tokens_in": total_tokens_in,
@@ -49,6 +51,14 @@ def build_export(session_id: str, calls: list[dict[str, Any]]) -> dict[str, Any]
         },
         "calls": calls,
     }
+
+
+def _pretty(value: str) -> str:
+    """Pretty-print if value is JSON, otherwise return as-is."""
+    try:
+        return json.dumps(json.loads(value), indent=2, ensure_ascii=False)
+    except Exception:
+        return value
 
 
 def render_html_report(export: dict[str, Any]) -> str:
@@ -73,7 +83,8 @@ def render_html_report(export: dict[str, Any]) -> str:
 
     def render_call(call: dict, n: int) -> str:
         is_error = (call.get("status_code") or 200) != 200
-        status_style = "color:#ef4444" if is_error else "color:#22c55e"
+        is_warning = not is_error and (call.get("error_detail") or "").startswith("budget_warning:")
+        status_style = "color:#ef4444" if is_error else ("color:#f59e0b" if is_warning else "color:#22c55e")
         status_text = f"HTTP {call.get('status_code', 200)}"
         if is_error and call.get("error_detail"):
             status_text += f" — {call['error_detail'][:120]}"
@@ -105,17 +116,25 @@ def render_html_report(export: dict[str, Any]) -> str:
             tool_results_html = f"<p class='label'>Tool results</p><ul>{items}</ul>"
 
         handoff_html = ""
-        if call.get("handoff_from") or call.get("handoff_to"):
-            handoff_html = (
-                f"<p class='label'>Handoff</p>"
-                f"<p>{esc(call.get('handoff_from',''))} → {esc(call.get('handoff_to',''))}</p>"
-            )
+        hf, ht = call.get("handoff_from"), call.get("handoff_to")
+        if hf or ht:
+            parts = []
+            if hf: parts.append(esc(hf))
+            if hf and ht: parts.append("→")
+            if ht: parts.append(esc(ht))
+            handoff_html = f"<p class='label'>Handoff</p><p>{' '.join(parts)}</p>"
 
+        warning_badge = '<span style="background:#78350f;color:#fbbf24;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;margin-left:8px">⚠ budget</span>' if is_warning else ""
+        warning_msg = (call.get("error_detail") or "").removeprefix("budget_warning:").strip()
+        warning_section = f'<p class="label" style="color:#f59e0b">Budget Warning</p><pre style="border-left:3px solid #f59e0b">{esc(warning_msg)}</pre>' if is_warning else ""
+
+        card_class = "call-error" if is_error else ("call-warning" if is_warning else "")
         return f"""
-        <div class="call {'call-error' if is_error else ''}">
+        <div class="call {card_class}">
           <div class="call-header">
             <span class="call-n">#{n}</span>
             <span class="call-model">{esc(call.get('model_id',''))}</span>
+            {warning_badge}
             <span style="{status_style};font-size:12px;margin-left:auto">{esc(status_text)}</span>
           </div>
           <table class="meta">
@@ -134,8 +153,9 @@ def render_html_report(export: dict[str, Any]) -> str:
           {f'<p class="label">Input (last user message)</p><pre>{esc(last_user)}</pre>' if last_user else ""}
           {tool_results_html}
           {tool_calls_html}
-          {f'<p class="label">Output</p><pre>{esc(call.get("content",""))}</pre>' if call.get("content") else ""}
+          {f'<p class="label">Output</p><pre>{esc(_pretty(call.get("content","")) )}</pre>' if call.get("content") else ""}
           {handoff_html}
+          {warning_section}
           {f'<p class="label" style="color:#ef4444">Error</p><pre>{esc(call.get("error_detail",""))}</pre>' if is_error and call.get("error_detail") else ""}
         </div>
         """
@@ -160,8 +180,10 @@ def render_html_report(export: dict[str, Any]) -> str:
                 padding: 8px 12px; border-radius: 4px; margin-bottom: 24px; word-break: break-all; }}
   .call {{ border: 1px solid #e5e5e5; border-radius: 6px; margin-bottom: 16px; overflow: hidden; page-break-inside: avoid; }}
   .call-error {{ border-color: #fca5a5; }}
+  .call-warning {{ border-color: #f59e0b; }}
   .call-header {{ background: #f9f9f9; padding: 8px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #e5e5e5; }}
   .call-error .call-header {{ background: #fff5f5; }}
+  .call-warning .call-header {{ background: #fffbeb; }}
   .call-n {{ font-size: 11px; color: #999; font-weight: 600; width: 24px; }}
   .call-model {{ font-family: monospace; font-size: 12px; font-weight: 600; color: #1d4ed8; }}
   table.meta {{ width: 100%; border-collapse: collapse; font-size: 11px; margin: 10px 12px; width: calc(100% - 24px); }}
@@ -170,7 +192,8 @@ def render_html_report(export: dict[str, Any]) -> str:
   .label {{ font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
              color: #999; margin: 10px 12px 4px; }}
   pre {{ margin: 0 12px 10px; background: #f9f9f9; padding: 8px 10px; border-radius: 4px;
-         font-size: 11px; white-space: pre-wrap; word-break: break-word; color: #333; max-height: 200px; overflow: auto; }}
+         font-size: 11px; white-space: pre-wrap; word-break: break-word; color: #333; }}
+  @media screen {{ pre {{ max-height: 300px; overflow: auto; }} }}
   ul {{ margin: 0 12px 10px 24px; }}
   ul li {{ font-size: 12px; margin-bottom: 2px; color: #333; }}
   code {{ font-family: monospace; font-size: 11px; background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }}
@@ -189,7 +212,7 @@ def render_html_report(export: dict[str, Any]) -> str:
 <h2>Session Summary</h2>
 <div class="meta-grid">
   <div><strong>Session ID:</strong> {esc(session['session_id'])}</div>
-  <div><strong>Call count:</strong> {esc(session['call_count'])} ({esc(session['error_count'])} errors)</div>
+  <div><strong>Call count:</strong> {esc(session['call_count'])} ({esc(session['error_count'])} errors{f", {esc(session['warning_count'])} budget warnings" if session.get('warning_count') else ""})</div>
   <div><strong>Started:</strong> {esc(session['started_at'])}</div>
   <div><strong>Ended:</strong> {esc(session['ended_at'])}</div>
   <div><strong>Models:</strong> {esc(', '.join(session['models']))}</div>

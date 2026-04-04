@@ -59,12 +59,18 @@ def init_otel(
         )
         return
 
+    # Surface OTLP export errors in logs
+    import logging as _logging
+    _logging.getLogger("opentelemetry.exporter.otlp").setLevel(_logging.WARNING)
+    _logging.getLogger("opentelemetry.sdk.trace.export").setLevel(_logging.WARNING)
+
     resource = Resource({SERVICE_NAME: service_name})
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(
         endpoint=f"{endpoint.rstrip('/')}/v1/traces",
         headers=headers or {},
     )
+    # BatchSpanProcessor exports in a background thread — does not block the async event loop
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("agentledger", schema_url="https://opentelemetry.io/schemas/1.24.0")
@@ -84,6 +90,7 @@ def emit_span(
     handoff_from: Optional[str] = None,
     handoff_to: Optional[str] = None,
     status_code: int = 200,
+    **_: object,  # absorb extra meta fields (app_id, etc.) without error
 ) -> None:
     """Emit one OTel span for an intercepted LLM call.  Never raises."""
     if _tracer is None:
@@ -174,13 +181,14 @@ def emit_span(
         span.end(end_time=end_ns)
 
     except Exception as exc:
-        logger.debug("OTel emit failed: %s", exc)
+        logger.warning("OTel emit failed: %s", exc)
 
 
 def _uuid_to_trace_id(uid: str) -> int:
-    """Convert a UUID string to a 128-bit int for use as an OTel trace ID."""
-    clean = uid.replace("-", "")[:32].ljust(32, "0")
-    return int(clean, 16) or 1  # OTel requires non-zero
+    """Convert any string to a 128-bit int for use as an OTel trace ID."""
+    import hashlib
+    digest = hashlib.sha256(uid.encode()).hexdigest()
+    return int(digest[:32], 16) or 1  # OTel requires non-zero
 
 
 def _uuid_to_span_id(uid: str) -> int:
