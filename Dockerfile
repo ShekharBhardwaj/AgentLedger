@@ -6,7 +6,8 @@ COPY pyproject.toml .
 COPY README.md .
 COPY agentledger/ agentledger/
 
-RUN pip install --no-cache-dir ".[postgres]"
+ARG VERSION=0.0.0.dev0
+RUN HATCH_VCS_PRETEND_VERSION=${VERSION} pip install --no-cache-dir ".[postgres]"
 
 ENV AGENTLEDGER_HOST=0.0.0.0
 ENV AGENTLEDGER_PORT=8000
