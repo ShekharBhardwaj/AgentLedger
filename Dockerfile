@@ -7,7 +7,8 @@ COPY README.md .
 COPY agentledger/ agentledger/
 
 ARG VERSION=0.0.0.dev0
-RUN HATCH_VCS_PRETEND_VERSION=${VERSION} pip install --no-cache-dir ".[postgres]"
+RUN pip install --no-cache-dir hatchling hatch-vcs && \
+    HATCH_VCS_PRETEND_VERSION=${VERSION} pip install --no-cache-dir --no-build-isolation ".[postgres]"
 
 ENV AGENTLEDGER_HOST=0.0.0.0
 ENV AGENTLEDGER_PORT=8000
