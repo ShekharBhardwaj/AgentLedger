@@ -133,6 +133,17 @@ def create_app(
         if supplied != _api_key:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    # ── Health ───────────────────────────────────────────────────────────────
+
+    @app.get("/health")
+    async def health() -> JSONResponse:
+        try:
+            from importlib.metadata import version as _v
+            _version = _v("agentic-ledger")
+        except Exception:
+            _version = "unknown"
+        return JSONResponse({"status": "ok", "version": _version})
+
     # ── Dashboard ────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
@@ -158,6 +169,14 @@ def create_app(
         _check_auth(request)
         sessions = await request.app.state.store.list_sessions()
         return JSONResponse(sessions)
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str, request: Request) -> JSONResponse:
+        _check_auth(request)
+        deleted = await request.app.state.store.delete_session(session_id)
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        return JSONResponse({"deleted": deleted})
 
     @app.get("/api/search")
     async def api_search(request: Request, q: str = "") -> JSONResponse:

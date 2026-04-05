@@ -164,9 +164,11 @@ Every LLM call is stored with:
 
 | Method | Endpoint | Description |
 |---|---|---|
+| `GET` | `/health` | Health check — `{"status":"ok","version":"..."}`. No auth required. |
 | `GET` | `/` | Live dashboard |
 | `WS` | `/ws` | WebSocket stream — powers live dashboard updates |
 | `GET` | `/api/sessions` | List recent sessions with aggregated stats |
+| `DELETE` | `/api/sessions/{session_id}` | Delete a session and all its calls |
 | `GET` | `/api/search?q=...` | Full-text search across all captured calls |
 | `GET` | `/session/{session_id}` | All calls in a session, ordered by time |
 | `GET` | `/explain/{action_id}` | Single call by action ID |
@@ -284,6 +286,13 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_OTEL_ENDPOINT` | _(none)_ | OTLP/HTTP base URL, e.g. `http://localhost:4318`. OTel export is disabled when not set. |
 | `AGENTLEDGER_OTEL_SERVICE_NAME` | `agentledger` | Value of `service.name` reported to the collector. |
 | `AGENTLEDGER_OTEL_HEADERS` | _(none)_ | Comma-separated `key=value` auth headers, e.g. `x-honeycomb-team=abc123`. |
+
+**Pricing overrides** — override or extend the built-in per-token pricing table (merged at startup):
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENTLEDGER_PRICING` | _(none)_ | Inline JSON map of model → `[input_per_million, output_per_million]` USD. E.g. `'{"gpt-4o": [2.50, 10.00], "my-model": [1.00, 2.00]}'`. |
+| `AGENTLEDGER_PRICING_FILE` | _(none)_ | Path to a JSON file with the same format. Applied after `AGENTLEDGER_PRICING`. |
 
 ---
 
