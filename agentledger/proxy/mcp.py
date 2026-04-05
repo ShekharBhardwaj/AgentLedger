@@ -160,7 +160,7 @@ async def _handle_tool_call(id_: Any, params: dict, request: Request) -> JSONRes
     store = request.app.state.store
 
     if name == "list_sessions":
-        limit = min(int(args.get("limit", 20)), 100)
+        limit = max(1, min(int(args.get("limit", 20)), 100))
         sessions = await store.list_sessions(limit=limit)
         return JSONResponse(_ok(id_, _text_content(json.dumps(sessions, indent=2, default=str))))
 
@@ -186,7 +186,7 @@ async def _handle_tool_call(id_: Any, params: dict, request: Request) -> JSONRes
         query = args.get("query", "").strip()
         if not query:
             return JSONResponse(_err(id_, -32602, "query is required"))
-        limit = min(int(args.get("limit", 20)), 100)
+        limit = max(1, min(int(args.get("limit", 20)), 100))
         results = await store.search(query, limit=limit)
         if not results:
             return JSONResponse(_ok(id_, _text_content(f"No results found for query {query!r}")))
