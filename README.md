@@ -124,6 +124,7 @@ The dashboard updates live via WebSocket as calls come in. No refresh needed.
 
 - **Calls tab** — every LLM call with full prompt, system prompt, tool calls, tool results, output, tokens, cost, latency, and errors
 - **Flow tab** — visual DAG of your multi-agent system. Each agent is a node with aggregated cost, latency, and call count. Edges represent handoffs. Click a node to highlight its calls.
+- **Trace tab** — Gantt/waterfall timeline showing every call as a horizontal bar on a shared time axis. Parallel calls appear side-by-side at the same position — no instrumentation required. Works purely from timestamps. Click any bar to jump to the full call detail. Budget warnings show as an amber border on the bar without hiding the agent colour.
 - **Search** — full-text search across all sessions by prompt, output, agent name, or user ID
 
 ---
@@ -343,7 +344,7 @@ Pass these from your agent on each LLM call. All optional. They enrich captured 
 | `x-agentledger-user-id` | _(none)_ | End user who triggered this run. Enables per-user rate limiting and auditing. |
 | `x-agentledger-agent-name` | _(none)_ | Name of the agent making this call (e.g. `"orchestrator"`, `"researcher"`). Powers the Flow tab DAG and agent-level budgets and rate limits. |
 | `x-agentledger-app-id` | _(none)_ | Application name or ID. Useful when multiple apps share one proxy. |
-| `x-agentledger-parent-action-id` | _(none)_ | The `action_id` of the call that spawned this one. Builds the nested agent call graph. |
+| `x-agentledger-parent-action-id` | _(none)_ | The `action_id` of the call that spawned this one. When set, the Trace tab draws explicit parent→child connectors. Without it, the Trace tab infers relationships from timestamps automatically. |
 | `x-agentledger-environment` | `development` | `production`, `staging`, or `development`. Shown in the dashboard. |
 | `x-agentledger-handoff-from` | _(none)_ | Agent handing off control (e.g. `"orchestrator"`). Renders as a directed edge in the Flow DAG. |
 | `x-agentledger-handoff-to` | _(none)_ | Agent receiving control (e.g. `"researcher"`). Renders as a directed edge in the Flow DAG. |
