@@ -564,7 +564,7 @@ function lastUserMessage(messages) {
 
 function escHtml(str) {
   if (str == null) return '';
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── WebSocket (live updates) ──────────────────────────────────────────────────
@@ -622,13 +622,16 @@ async function doSearch(q) {
     el.innerHTML = results.map(r => {
       const snippet = r.content || lastUserMessage(r.messages) || '';
       return `
-        <div class="search-result-item" onclick="showSearchResult('${escHtml(r.action_id)}', '${escHtml(r.session_id || '')}')">
+        <div class="search-result-item" data-action-id="${escHtml(r.action_id)}" data-session-id="${escHtml(r.session_id || '')}">
           <div class="search-result-model">${escHtml(r.model_id)}</div>
           <div class="search-result-snippet">${escHtml(snippet.slice(0, 80))}</div>
           <div class="session-meta"><span>${escHtml(r.agent_name || '')}</span><span>${timeAgo(r.timestamp)}</span></div>
         </div>
       `;
     }).join('');
+    el.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => showSearchResult(item.dataset.actionId, item.dataset.sessionId));
+    });
   } catch(e) {
     el.innerHTML = '<div class="empty-state">Search failed.</div>';
   }
@@ -649,7 +652,9 @@ async function showSearchResult(actionId, sessionId) {
     const call = await res.json();
     document.getElementById('detail-header').innerHTML =
       `<span class="detail-session-id">${escHtml(call.model_id)}</span>`;
-    document.getElementById('detail-body').innerHTML = renderCall(call, 1);
+    const detailBody = document.getElementById('detail-body');
+    detailBody.innerHTML = renderCall(call, 1);
+    bindParentLinks(detailBody);
   }
 }
 
@@ -668,11 +673,10 @@ async function loadSessions(silent = false) {
       const c = cost(s.total_cost_usd);
       return `
       <div class="session-item ${s.session_id === activeSessionId ? 'active' : ''}"
-           onclick="loadSession('${escHtml(s.session_id)}')">
+           data-sid="${escHtml(s.session_id)}">
         <div style="display:flex;align-items:center;gap:4px">
           <div class="session-id" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s.session_id)}</div>
-          <button class="delete-session-btn" title="Delete session"
-            onclick="event.stopPropagation();deleteSession('${escHtml(s.session_id)}')"
+          <button class="delete-session-btn" title="Delete session" data-sid="${escHtml(s.session_id)}"
             style="flex-shrink:0;background:none;border:none;cursor:pointer;color:#444;font-size:12px;padding:2px 4px;border-radius:3px;line-height:1"
             onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#444'">✕</button>
         </div>
@@ -686,6 +690,12 @@ async function loadSessions(silent = false) {
       </div>
       `;
     }).join('');
+    el.querySelectorAll('.session-item').forEach(item => {
+      item.addEventListener('click', () => loadSession(item.dataset.sid));
+    });
+    el.querySelectorAll('.delete-session-btn').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); deleteSession(btn.dataset.sid); });
+    });
   } catch(e) {
     if (!silent) el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
   }
@@ -762,10 +772,17 @@ async function loadSession(sessionId, silent = false) {
 
     const scrollTop = silent ? body.scrollTop : 0;
     body.innerHTML = calls.map((call, i) => renderCall(call, i + 1)).join('');
+    bindParentLinks(body);
     body.scrollTop = scrollTop;
   } catch(e) {
     if (!silent) body.innerHTML = '<div class="placeholder">Failed to load session.</div>';
   }
+}
+
+function bindParentLinks(container) {
+  container.querySelectorAll('[data-parent-action-id]').forEach(el => {
+    el.addEventListener('click', () => scrollToAction(el.dataset.parentActionId));
+  });
 }
 
 function renderCall(call, n) {
@@ -830,7 +847,7 @@ function renderCall(call, n) {
 
   const parentSection = call.parent_action_id ? `
     <div class="parent-link">
-      Triggered by <a onclick="scrollToAction('${escHtml(call.parent_action_id)}')">${shortId(call.parent_action_id)}</a>
+      Triggered by <a data-parent-action-id="${escHtml(call.parent_action_id)}" style="cursor:pointer">${shortId(call.parent_action_id)}</a>
     </div>
   ` : '';
 
@@ -1084,7 +1101,7 @@ function renderFlowDAG(calls) {
       : Math.round(n.totalMs) + 'ms';
 
     return `
-    <g transform="translate(${x},${y})" style="cursor:pointer" onclick="filterByAgentAndShowBar('${escHtml(id)}')">
+    <g transform="translate(${x},${y})" style="cursor:pointer" data-agent-id="${escHtml(id)}">
       <rect width="${NODE_W}" height="${NODE_H}" rx="8" fill="#111" stroke="${borderColor}" stroke-width="1.5"/>
       <rect width="${NODE_W}" height="32" rx="8" fill="${headerBg}" stroke="${borderColor}" stroke-width="1.5"/>
       <rect y="24" width="${NODE_W}" height="8" fill="${headerBg}"/>
@@ -1100,6 +1117,9 @@ function renderFlowDAG(calls) {
   }).join('');
 
   svg.innerHTML = defs + edgeSvg + nodeSvg;
+  svg.querySelectorAll('g[data-agent-id]').forEach(g => {
+    g.addEventListener('click', () => filterByAgentAndShowBar(g.dataset.agentId));
+  });
 }
 
 let _agentFilter = null;
