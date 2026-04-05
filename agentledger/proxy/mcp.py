@@ -71,7 +71,7 @@ async def handle_mcp(request: Request) -> JSONResponse:
 
     method = body.get("method")
     id_ = body.get("id")
-    params = body.get("params", {})
+    params = body.get("params") or {}
 
     if method == "initialize":
         return JSONResponse(_ok(id_, {
