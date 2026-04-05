@@ -41,8 +41,11 @@ class CanonicalResponse:
     cost_usd: Optional[float] = None
 
 
-def detect_provider(path: str, model: str) -> str:
-    if "messages" in path or model.startswith("claude"):
+def detect_provider(path: str, model: str) -> str:  # noqa: ARG001
+    # Path is authoritative — it reflects the actual wire format in use.
+    # Do NOT use model name: a Claude model routed through LiteLLM on
+    # /v1/chat/completions uses OpenAI wire format, not Anthropic format.
+    if "messages" in path:
         return "anthropic"
     return "openai"
 

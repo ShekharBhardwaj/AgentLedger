@@ -33,11 +33,14 @@ Or via CLI:
 
 import datetime
 import json
+import logging
 import os
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -133,6 +136,17 @@ def create_app(
         if supplied != _api_key:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    # ── Health ───────────────────────────────────────────────────────────────
+
+    @app.get("/health")
+    async def health() -> JSONResponse:
+        try:
+            from importlib.metadata import version as _v
+            _version = _v("agentic-ledger")
+        except Exception:
+            _version = "unknown"
+        return JSONResponse({"status": "ok", "version": _version})
+
     # ── Dashboard ────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
@@ -158,6 +172,14 @@ def create_app(
         _check_auth(request)
         sessions = await request.app.state.store.list_sessions()
         return JSONResponse(sessions)
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str, request: Request) -> JSONResponse:
+        _check_auth(request)
+        deleted = await request.app.state.store.delete_session(session_id)
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        return JSONResponse({"deleted": deleted})
 
     @app.get("/api/search")
     async def api_search(request: Request, q: str = "") -> JSONResponse:
@@ -229,10 +251,15 @@ def create_app(
         meta = _extract_meta(request)
 
         # ── Rate limit check ─────────────────────────────────────────────────
+        # Fail open: a rate-limiter error must never block the agent's LLM call.
         if is_llm_path:
-            rate_error = _rate_limiter.check(
-                meta.get("session_id"), meta.get("agent_name"), meta.get("user_id")
-            )
+            try:
+                rate_error = _rate_limiter.check(
+                    meta.get("session_id"), meta.get("agent_name"), meta.get("user_id")
+                )
+            except Exception:
+                logger.warning("Rate limiter check failed — allowing call through", exc_info=True)
+                rate_error = None
             if rate_error:
                 return JSONResponse(
                     {"error": {"type": "rate_limit_exceeded", "message": rate_error}},
@@ -240,12 +267,18 @@ def create_app(
                 )
 
         # ── Budget check ─────────────────────────────────────────────────────
+        # Fail open: if the store is unavailable the agent must not be blocked.
+        # Budget enforcement resumes automatically once the store recovers.
         _budget_warning: Optional[str] = None  # set in warn mode; carried into actual save
         if is_llm_path and (budget_session is not None or budget_agent is not None or budget_daily is not None):
-            budget_error = await _check_budgets(
-                request.app.state.store, meta,
-                budget_session, budget_agent, budget_daily,
-            )
+            try:
+                budget_error = await _check_budgets(
+                    request.app.state.store, meta,
+                    budget_session, budget_agent, budget_daily,
+                )
+            except Exception:
+                logger.warning("Budget check failed — allowing call through", exc_info=True)
+                budget_error = None
             if budget_error:
                 should_block = budget_action in ("block", "both")
                 should_warn  = budget_action in ("warn",  "both")

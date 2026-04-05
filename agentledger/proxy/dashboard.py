@@ -252,7 +252,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .export-link:hover { border-color: #444; color: #ccc; }
 
   /* Flow DAG */
-  .flow-view {
+  .flow-view, .trace-view {
     flex: 1;
     overflow: auto;
     display: flex;
@@ -260,7 +260,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     justify-content: flex-start;
     padding: 32px 20px;
   }
-  .flow-view svg { overflow: visible; display: block; }
+  .flow-view svg, .trace-view svg { overflow: visible; display: block; }
   .flow-empty {
     height: 100%;
     display: flex;
@@ -504,6 +504,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="flow-empty" id="flow-empty">No agent data in this session.<br>Add <code>x-agentledger-agent-name</code> to your LLM calls<br>to see the flow here.</div>
       <svg id="flow-svg"></svg>
     </div>
+    <div class="trace-view" id="trace-view" style="display:none">
+      <div class="flow-empty" id="trace-empty" style="display:none">No calls in this session.</div>
+      <svg id="trace-svg"></svg>
+    </div>
   </div>
 </div>
 
@@ -564,7 +568,7 @@ function lastUserMessage(messages) {
 
 function escHtml(str) {
   if (str == null) return '';
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── WebSocket (live updates) ──────────────────────────────────────────────────
@@ -622,13 +626,16 @@ async function doSearch(q) {
     el.innerHTML = results.map(r => {
       const snippet = r.content || lastUserMessage(r.messages) || '';
       return `
-        <div class="search-result-item" onclick="showSearchResult('${escHtml(r.action_id)}', '${escHtml(r.session_id || '')}')">
+        <div class="search-result-item" data-action-id="${escHtml(r.action_id)}" data-session-id="${escHtml(r.session_id || '')}">
           <div class="search-result-model">${escHtml(r.model_id)}</div>
           <div class="search-result-snippet">${escHtml(snippet.slice(0, 80))}</div>
           <div class="session-meta"><span>${escHtml(r.agent_name || '')}</span><span>${timeAgo(r.timestamp)}</span></div>
         </div>
       `;
     }).join('');
+    el.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => showSearchResult(item.dataset.actionId, item.dataset.sessionId));
+    });
   } catch(e) {
     el.innerHTML = '<div class="empty-state">Search failed.</div>';
   }
@@ -649,7 +656,9 @@ async function showSearchResult(actionId, sessionId) {
     const call = await res.json();
     document.getElementById('detail-header').innerHTML =
       `<span class="detail-session-id">${escHtml(call.model_id)}</span>`;
-    document.getElementById('detail-body').innerHTML = renderCall(call, 1);
+    const detailBody = document.getElementById('detail-body');
+    detailBody.innerHTML = renderCall(call, 1);
+    bindParentLinks(detailBody);
   }
 }
 
@@ -668,8 +677,13 @@ async function loadSessions(silent = false) {
       const c = cost(s.total_cost_usd);
       return `
       <div class="session-item ${s.session_id === activeSessionId ? 'active' : ''}"
-           onclick="loadSession('${escHtml(s.session_id)}')">
-        <div class="session-id">${escHtml(s.session_id)}</div>
+           data-sid="${escHtml(s.session_id)}">
+        <div style="display:flex;align-items:center;gap:4px">
+          <div class="session-id" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s.session_id)}</div>
+          <button class="delete-session-btn" title="Delete session" data-sid="${escHtml(s.session_id)}"
+            style="flex-shrink:0;background:none;border:1px solid #2a2a2a;border-radius:3px;cursor:pointer;color:#888;font-size:11px;padding:1px 5px;line-height:1.4"
+            onmouseover="this.style.color='#ef4444';this.style.borderColor='#ef4444'" onmouseout="this.style.color='#888';this.style.borderColor='#2a2a2a'">✕</button>
+        </div>
         <div class="session-meta">
           <span>${s.call_count} call${s.call_count !== 1 ? 's' : ''}</span>
           <span>${ms(s.total_latency_ms)}</span>
@@ -680,8 +694,32 @@ async function loadSessions(silent = false) {
       </div>
       `;
     }).join('');
+    el.querySelectorAll('.session-item').forEach(item => {
+      item.addEventListener('click', () => loadSession(item.dataset.sid));
+    });
+    el.querySelectorAll('.delete-session-btn').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); deleteSession(btn.dataset.sid); });
+    });
   } catch(e) {
     if (!silent) el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
+  }
+}
+
+// ── Session delete ───────────────────────────────────────────────────────────
+
+async function deleteSession(sessionId) {
+  if (!confirm(`Delete session "${sessionId}" and all its calls?`)) return;
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(sessionId), { method: 'DELETE' });
+    if (!res.ok) { alert('Failed to delete session.'); return; }
+    if (activeSessionId === sessionId) {
+      activeSessionId = null;
+      document.getElementById('detail-body').innerHTML = '<div class="placeholder">Select a session to inspect</div>';
+      document.getElementById('detail-header').innerHTML = '';
+    }
+    loadSessions();
+  } catch(e) {
+    alert('Failed to delete session.');
   }
 }
 
@@ -727,6 +765,7 @@ async function loadSession(sessionId, silent = false) {
       <div class="detail-tabs">
         <button class="tab-btn ${activeTab==='calls'?'active':''}" onclick="switchTab('calls')">Calls</button>
         <button class="tab-btn ${activeTab==='flow'?'active':''}" onclick="switchTab('flow')">Flow</button>
+        <button class="tab-btn ${activeTab==='trace'?'active':''}" onclick="switchTab('trace')">Trace</button>
       </div>
       <div class="export-btn">
         <a class="export-link" href="/export/${encodeURIComponent(sessionId)}" download>↓ JSON</a>
@@ -735,13 +774,21 @@ async function loadSession(sessionId, silent = false) {
     `;
 
     renderFlowDAG(calls);
+    renderTraceDAG(calls);
 
     const scrollTop = silent ? body.scrollTop : 0;
     body.innerHTML = calls.map((call, i) => renderCall(call, i + 1)).join('');
+    bindParentLinks(body);
     body.scrollTop = scrollTop;
   } catch(e) {
     if (!silent) body.innerHTML = '<div class="placeholder">Failed to load session.</div>';
   }
+}
+
+function bindParentLinks(container) {
+  container.querySelectorAll('[data-parent-action-id]').forEach(el => {
+    el.addEventListener('click', () => scrollToAction(el.dataset.parentActionId));
+  });
 }
 
 function renderCall(call, n) {
@@ -806,7 +853,7 @@ function renderCall(call, n) {
 
   const parentSection = call.parent_action_id ? `
     <div class="parent-link">
-      Triggered by <a onclick="scrollToAction('${escHtml(call.parent_action_id)}')">${shortId(call.parent_action_id)}</a>
+      Triggered by <a data-parent-action-id="${escHtml(call.parent_action_id)}" style="cursor:pointer">${shortId(call.parent_action_id)}</a>
     </div>
   ` : '';
 
@@ -858,8 +905,9 @@ function scrollToAction(actionId) {
 
 function switchTab(tab) {
   activeTab = tab;
-  document.getElementById('detail-body').style.display = tab === 'calls' ? '' : 'none';
-  document.getElementById('flow-view').style.display  = tab === 'flow'  ? '' : 'none';
+  document.getElementById('detail-body').style.display  = tab === 'calls' ? '' : 'none';
+  document.getElementById('flow-view').style.display    = tab === 'flow'  ? '' : 'none';
+  document.getElementById('trace-view').style.display   = tab === 'trace' ? '' : 'none';
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.toggle('active', btn.textContent.toLowerCase() === tab);
   });
@@ -1060,7 +1108,7 @@ function renderFlowDAG(calls) {
       : Math.round(n.totalMs) + 'ms';
 
     return `
-    <g transform="translate(${x},${y})" style="cursor:pointer" onclick="filterByAgentAndShowBar('${escHtml(id)}')">
+    <g transform="translate(${x},${y})" style="cursor:pointer" data-agent-id="${escHtml(id)}">
       <rect width="${NODE_W}" height="${NODE_H}" rx="8" fill="#111" stroke="${borderColor}" stroke-width="1.5"/>
       <rect width="${NODE_W}" height="32" rx="8" fill="${headerBg}" stroke="${borderColor}" stroke-width="1.5"/>
       <rect y="24" width="${NODE_W}" height="8" fill="${headerBg}"/>
@@ -1076,6 +1124,217 @@ function renderFlowDAG(calls) {
   }).join('');
 
   svg.innerHTML = defs + edgeSvg + nodeSvg;
+  svg.querySelectorAll('g[data-agent-id]').forEach(g => {
+    g.addEventListener('click', () => filterByAgentAndShowBar(g.dataset.agentId));
+  });
+}
+
+// ── Trace: Gantt / waterfall view ────────────────────────────────────────────
+// Each call = a horizontal bar on a shared time axis.
+// Parallel calls appear at the same x position — no instrumentation required.
+// If parent_action_id is set, connector lines show explicit hierarchy.
+// For uninstrumented calls, connectors are inferred from temporal proximity.
+// Clicking any bar switches to the Calls tab and scrolls to that call.
+
+function renderTraceDAG(calls) {
+  const svg   = document.getElementById('trace-svg');
+  const empty = document.getElementById('trace-empty');
+  svg.innerHTML = '';
+
+  if (!calls.length) {
+    empty.style.display = '';
+    svg.style.display   = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  svg.style.display   = '';
+
+  // ── Parse timestamps, sort chronologically ────────────────────────────────
+  const rows = calls.map(c => ({
+    ...c,
+    t0: new Date(c.timestamp).getTime(),
+    t1: new Date(c.timestamp).getTime() + (c.latency_ms || 0),
+  })).sort((a, b) => a.t0 - b.t0 || a.action_id.localeCompare(b.action_id));
+
+  const sessionT0 = rows[0].t0;
+  const sessionT1 = Math.max(...rows.map(r => r.t1));
+  const durMs     = Math.max(sessionT1 - sessionT0, 1);
+
+  // ── Layout constants ──────────────────────────────────────────────────────
+  const ML       = 16;    // left margin
+  const LABEL_W  = 164;   // agent name + model column
+  const TIMELINE = 620;   // timeline bar area width
+  const STATS_W  = 130;   // latency / tokens / cost column
+  const MR       = 16;    // right margin
+  const BAR_H    = 22;    // height of each bar
+  const ROW_H    = 32;    // row pitch (bar + gap)
+  const TICK_H   = 38;    // header height for time axis
+  const SVG_W    = ML + LABEL_W + TIMELINE + STATS_W + MR;
+  const SVG_H    = TICK_H + rows.length * ROW_H + 20;
+
+  // ms offset → SVG x coordinate inside the timeline area
+  const tx = ms => ML + LABEL_W + Math.round(Math.min(ms / durMs, 1) * TIMELINE);
+
+  // ── Stable per-agent colour assignment (first-seen order) ─────────────────
+  // Bright, clearly distinct colours optimised for dark backgrounds.
+  const PALETTE  = ['#a78bfa','#60a5fa','#34d399','#fbbf24','#f87171','#e879f9','#2dd4bf','#fb923c'];
+  const colorMap = new Map();
+  let   ci       = 0;
+  const agentCol = name => {
+    if (!name) return '#3f3f3f';
+    if (!colorMap.has(name)) colorMap.set(name, PALETTE[ci++ % PALETTE.length]);
+    return colorMap.get(name);
+  };
+  rows.forEach(r => agentCol(r.agent_name));   // assign in chronological order
+
+  // ── Time axis ticks ───────────────────────────────────────────────────────
+  const NICE = [25,50,100,200,500,1000,2000,5000,10000,30000,60000];
+  const tickStep = NICE.find(t => durMs / t <= 7) || 60000;
+  const fmtMs = t => t === 0 ? '0' : t >= 1000 ? (t/1000).toFixed(t%1000===0?0:1)+'s' : t+'ms';
+
+  let axisSvg = `<line x1="${ML+LABEL_W}" y1="${TICK_H}" x2="${ML+LABEL_W+TIMELINE}" y2="${TICK_H}" stroke="#1a1a1a" stroke-width="1"/>`;
+  for (let t = 0; t <= durMs; t += tickStep) {
+    const x = tx(t);
+    axisSvg += `
+      <line x1="${x}" y1="${TICK_H-5}" x2="${x}" y2="${TICK_H}"   stroke="#252525" stroke-width="1"/>
+      <line x1="${x}" y1="${TICK_H}"   x2="${x}" y2="${SVG_H-8}"  stroke="#0f0f0f" stroke-width="1" stroke-dasharray="3,5"/>
+      <text x="${x}" y="${TICK_H-9}" text-anchor="middle" fill="#333" font-size="9"
+            font-family="SF Mono,Fira Code,monospace">${fmtMs(t)}</text>`;
+  }
+
+  // ── Parent → child connectors ──────────────────────────────────────────────
+  // Priority: explicit parent_action_id > temporal inference.
+  // Inference: for each call, the parent is the call that ended most recently
+  // before it started, within a 2-second gap (covers spawn overhead).
+  // This requires zero instrumentation and correctly surfaces parallel siblings
+  // (two calls starting near the same time both point to the same predecessor).
+
+  const byAction = new Map(rows.map((r, i) => [r.action_id, i]));
+  const parentOf = new Map();   // action_id → parent action_id
+
+  for (let i = 1; i < rows.length; i++) {
+    const c = rows[i];
+    // Explicit parent wins if it's in this session
+    if (c.parent_action_id && byAction.has(c.parent_action_id)) {
+      parentOf.set(c.action_id, { id: c.parent_action_id, explicit: true });
+      continue;
+    }
+    // Infer: latest-ending predecessor that finished before c started (±50 ms tolerance
+    // for spawn overhead). No gap cap — a disconnected root is more honest than a
+    // wrong parent, but sessions with long pauses between calls are still rare and
+    // the most-recent-predecessor heuristic remains the best available signal.
+    let bestId  = null;
+    let bestT1  = -Infinity;
+    for (let j = 0; j < i; j++) {
+      const p = rows[j];
+      if (p.t1 <= c.t0 + 50 && p.t1 > bestT1) { bestT1 = p.t1; bestId = p.action_id; }
+    }
+    if (bestId !== null) {
+      parentOf.set(c.action_id, { id: bestId, explicit: false });
+    }
+  }
+
+  // Draw connectors (elbow: right from parent end, down, left to child start)
+  let connSvg = '';
+  for (const [childId, { id: parentId, explicit }] of parentOf) {
+    const pi = byAction.get(parentId);
+    const ci2 = byAction.get(childId);
+    if (pi === undefined || ci2 === undefined || pi === ci2) continue;
+    const pr = rows[pi];
+    const cr = rows[ci2];
+    // Connector departs from end of parent bar (clamped to timeline right edge)
+    const depX  = Math.min(tx(pr.t1 - sessionT0), ML + LABEL_W + TIMELINE);
+    const depY  = TICK_H + pi  * ROW_H + BAR_H / 2 + 5;
+    const arrX  = tx(cr.t0 - sessionT0);
+    const arrY  = TICK_H + ci2 * ROW_H + BAR_H / 2 + 5;
+    const elbX  = Math.max(depX, arrX);   // elbow turns at the rightmost of the two
+    const stroke = explicit ? '#2a2a2a' : '#181818';
+    connSvg += `<polyline
+      points="${depX},${depY} ${elbX},${depY} ${elbX},${arrY} ${arrX},${arrY}"
+      fill="none" stroke="${stroke}" stroke-width="1" stroke-dasharray="3,4"
+      marker-end="url(#tc-arr)"/>`;
+  }
+
+  // ── Row bars ──────────────────────────────────────────────────────────────
+  let rowsSvg = '';
+  for (let i = 0; i < rows.length; i++) {
+    const r     = rows[i];
+    const ry    = TICK_H + i * ROW_H;
+    const by    = ry + 5;            // bar top y
+
+    const isErr  = (r.status_code || 200) !== 200;
+    const isWarn = !isErr && (r.error_detail || '').startsWith('budget_warning:');
+    // Agent colour is always preserved — errors use red, warnings keep agent colour
+    // with an amber border so agents remain visually distinct across the session.
+    const col     = isErr ? '#dc2626' : agentCol(r.agent_name);
+    const barStroke = isWarn ? 'stroke="#d97706" stroke-width="1.5"' : '';
+
+    const bx = tx(r.t0 - sessionT0);
+    const bw = Math.max(4, tx(r.t1 - sessionT0) - bx);
+
+    const agent  = (r.agent_name || '—').slice(0, 21);
+    const model  = (r.model_id   || '').split('/').pop().slice(0, 21);
+    const lat    = r.latency_ms >= 1000 ? (r.latency_ms/1000).toFixed(1)+'s' : Math.round(r.latency_ms||0)+'ms';
+    const tok    = `${r.tokens_in||0}↑ ${r.tokens_out||0}↓`;
+    const cstr   = r.cost_usd ? '$'+(+r.cost_usd).toFixed(4) : '';
+    const warnBadge = isWarn ? `<text x="${bx+bw+3}" y="${by+14}" fill="#d97706" font-size="9" pointer-events="none">⚠</text>` : '';
+
+    // Alternating row background
+    if (i % 2 === 0) rowsSvg += `<rect x="0" y="${ry}" width="${SVG_W}" height="${ROW_H}" fill="#080808"/>`;
+
+    // Separator line
+    rowsSvg += `<line x1="${ML+LABEL_W}" y1="${ry+ROW_H-1}" x2="${ML+LABEL_W+TIMELINE}" y2="${ry+ROW_H-1}" stroke="#0d0d0d" stroke-width="1"/>`;
+
+    // Colour dot + agent name + model
+    rowsSvg += `<circle cx="${ML+5}" cy="${by+BAR_H/2}" r="3.5" fill="${col}"/>`;
+    rowsSvg += `<text x="${ML+13}" y="${by+11}" fill="${col}"
+      font-size="11" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">${escHtml(agent)}</text>`;
+    rowsSvg += `<text x="${ML+13}" y="${by+21}" fill="#555"
+      font-size="9" font-family="SF Mono,Fira Code,monospace">${escHtml(model)}</text>`;
+
+    // Full-width timeline track (dark, shows full session span)
+    rowsSvg += `<rect x="${ML+LABEL_W}" y="${by}" width="${TIMELINE}" height="${BAR_H}" rx="2" fill="#0b0b0b"/>`;
+
+    // Actual call bar (clickable); amber border overlay for budget warnings
+    rowsSvg += `<rect x="${bx}" y="${by}" width="${bw}" height="${BAR_H}" rx="3"
+      fill="${col}" opacity="0.82" ${barStroke} style="cursor:pointer"
+      data-trace-action-id="${escHtml(r.action_id)}"/>`;
+    rowsSvg += warnBadge;
+
+    // Duration label inside bar when wide enough
+    if (bw > 34) {
+      rowsSvg += `<text x="${bx + bw/2}" y="${by+14}" text-anchor="middle"
+        fill="#fff" font-size="9" font-weight="600"
+        font-family="SF Mono,Fira Code,monospace" pointer-events="none">${escHtml(lat)}</text>`;
+    }
+
+    // Stats column (right of timeline)
+    const sx = ML + LABEL_W + TIMELINE + 8;
+    rowsSvg += `<text x="${sx}"        y="${by+12}" fill="#4ade80" font-size="10" font-weight="500">${escHtml(lat)}</text>`;
+    rowsSvg += `<text x="${sx}"        y="${by+22}" fill="#6b7280" font-size="9">${escHtml(tok)}</text>`;
+    if (cstr) rowsSvg += `<text x="${sx+STATS_W-8}" y="${by+12}" text-anchor="end" fill="#86efac" font-size="10">${escHtml(cstr)}</text>`;
+  }
+
+  // ── Assemble SVG ──────────────────────────────────────────────────────────
+  const defs = `<defs>
+    <marker id="tc-arr" markerWidth="5" markerHeight="4" refX="4" refY="2" orient="auto">
+      <path d="M0,0 L5,2 L0,4 Z" fill="#2a2a2a"/>
+    </marker>
+  </defs>`;
+
+  svg.setAttribute('width',  SVG_W);
+  svg.setAttribute('height', SVG_H);
+  svg.innerHTML = defs + axisSvg + connSvg + rowsSvg;
+
+  // Hover: brighten bar; click: jump to call detail
+  svg.querySelectorAll('rect[data-trace-action-id]').forEach(el => {
+    el.addEventListener('mouseenter', () => el.setAttribute('opacity', '1'));
+    el.addEventListener('mouseleave', () => el.setAttribute('opacity', '0.82'));
+    el.addEventListener('click', () => {
+      switchTab('calls');
+      scrollToAction(el.dataset.traceActionId);
+    });
+  });
 }
 
 let _agentFilter = null;

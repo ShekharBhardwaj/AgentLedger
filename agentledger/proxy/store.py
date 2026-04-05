@@ -13,6 +13,7 @@ non-destructively so existing databases survive upgrades.
 import datetime
 import json
 import uuid
+from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from .normalize import CanonicalRequest, CanonicalResponse
@@ -35,7 +36,7 @@ _MIGRATION_COLUMNS = [
 ]
 
 
-class Store:
+class Store(ABC):
     """Common interface — use Store.connect(), not the subclasses directly."""
 
     @classmethod
@@ -44,6 +45,7 @@ class Store:
             return await _SqliteStore._connect(dsn)
         return await _PostgresStore._connect(dsn)
 
+    @abstractmethod
     async def save(
         self,
         action_id: str,
@@ -60,32 +62,36 @@ class Store:
         handoff_to: Optional[str] = None,
         status_code: int = 200,
         error_detail: Optional[str] = None,
-    ) -> None:
-        raise NotImplementedError
+    ) -> None: ...
 
-    async def get(self, action_id: str) -> Optional[dict[str, Any]]:
-        raise NotImplementedError
+    @abstractmethod
+    async def get(self, action_id: str) -> Optional[dict[str, Any]]: ...
 
-    async def get_session(self, session_id: str) -> list[dict[str, Any]]:
-        raise NotImplementedError
+    @abstractmethod
+    async def get_session(self, session_id: str) -> list[dict[str, Any]]: ...
 
-    async def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
-        raise NotImplementedError
+    @abstractmethod
+    async def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]: ...
 
-    async def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
-        raise NotImplementedError
+    @abstractmethod
+    async def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]: ...
 
-    async def get_session_cost(self, session_id: str) -> float:
-        raise NotImplementedError
+    @abstractmethod
+    async def get_session_cost(self, session_id: str) -> float: ...
 
-    async def get_agent_cost(self, agent_name: str, since_ts: float) -> float:
-        raise NotImplementedError
+    @abstractmethod
+    async def get_agent_cost(self, agent_name: str, since_ts: float) -> float: ...
 
-    async def get_period_cost(self, since_ts: float) -> float:
-        raise NotImplementedError
+    @abstractmethod
+    async def get_period_cost(self, since_ts: float) -> float: ...
 
-    async def close(self) -> None:
-        raise NotImplementedError
+    @abstractmethod
+    async def delete_session(self, session_id: str) -> int:
+        """Delete all calls for a session. Returns number of rows deleted."""
+        ...
+
+    @abstractmethod
+    async def close(self) -> None: ...
 
 
 # ── SQLite ───────────────────────────────────────────────────────────────────
@@ -240,6 +246,14 @@ class _SqliteStore(Store):
         ) as cur:
             row = await cur.fetchone()
         return float(row[0]) if row else 0.0
+
+    async def delete_session(self, session_id: str) -> int:
+        async with self._db.execute(
+            "DELETE FROM llm_calls WHERE session_id = ?", (session_id,)
+        ) as cur:
+            deleted = cur.rowcount
+        await self._db.commit()
+        return deleted
 
     async def close(self) -> None:
         await self._db.close()
@@ -427,6 +441,13 @@ class _PostgresStore(Store):
                 since,
             )
         return float(val or 0)
+
+    async def delete_session(self, session_id: str) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM llm_calls WHERE session_id = $1", uuid.UUID(session_id)
+            )
+        return int(result.split()[-1])  # "DELETE N"
 
     async def close(self) -> None:
         await self._pool.close()
