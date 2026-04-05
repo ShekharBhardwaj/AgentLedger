@@ -212,6 +212,7 @@ def create_app(
 
     @app.post("/mcp")
     async def mcp(request: Request) -> JSONResponse:
+        _check_auth(request)
         return await handle_mcp(request)
 
     # ── Transparent proxy ────────────────────────────────────────────────────

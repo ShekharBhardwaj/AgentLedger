@@ -172,7 +172,7 @@ Every LLM call is stored with:
 | `GET` | `/explain/{action_id}` | Single call by action ID |
 | `GET` | `/export/{session_id}` | JSON compliance export with SHA-256 integrity hash |
 | `GET` | `/export/{session_id}/report` | Printable HTML audit report |
-| `POST` | `/mcp` | MCP tool server — exposes captured data to other agents |
+| `POST` | `/mcp` | MCP tool server — `list_sessions`, `explain`, `get_session`, `search` |
 
 **Examples:**
 ```bash
@@ -188,6 +188,49 @@ curl http://localhost:8000/export/run-1 -o audit-run-1.json
 # Printable HTML report — open in browser, print to PDF
 open http://localhost:8000/export/run-1/report
 ```
+
+---
+
+## MCP server
+
+AgentLedger exposes its captured data as an MCP (Model Context Protocol) tool server at `POST /mcp`. Point Claude Desktop, Cursor, or any MCP-compatible client at it to query traces directly from your AI assistant.
+
+**Tools available:**
+
+| Tool | Description |
+|---|---|
+| `list_sessions` | List recent sessions with cost, token, and call count summaries |
+| `explain(action_id)` | Full trace for a single LLM call — prompt, tool calls, output, tokens, cost |
+| `get_session(session_id)` | All calls in a session in chronological order |
+| `search(query)` | Full-text search across all captured calls |
+
+**Configure in `claude_desktop_config.json`:**
+```json
+{
+  "mcpServers": {
+    "agentledger": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+If `AGENTLEDGER_API_KEY` is set, pass it as a header:
+```json
+{
+  "mcpServers": {
+    "agentledger": {
+      "url": "http://localhost:8000/mcp",
+      "headers": { "x-agentledger-api-key": "your-key" }
+    }
+  }
+}
+```
+
+Once connected, you can ask your assistant things like:
+- *"What did the SearchAgent do in the last session?"*
+- *"Show me all calls that mentioned rate limit errors"*
+- *"What was the total cost of session run-abc123?"*
 
 ---
 
