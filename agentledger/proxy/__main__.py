@@ -34,6 +34,10 @@ Reads config from environment variables:
     AGENTLEDGER_OTEL_ENDPOINT         OTLP/HTTP base URL, e.g. http://localhost:4318 (default: none)
     AGENTLEDGER_OTEL_SERVICE_NAME     service.name reported to collector (default: agentledger)
     AGENTLEDGER_OTEL_HEADERS          Comma-separated key=value auth headers (default: none)
+
+  Pricing overrides (merged over the built-in table at startup):
+    AGENTLEDGER_PRICING               Inline JSON — e.g. '{"gpt-4o": [2.50, 10.00], "my-model": [1.00, 2.00]}'
+    AGENTLEDGER_PRICING_FILE          Path to a JSON file with the same format
 """
 
 import logging

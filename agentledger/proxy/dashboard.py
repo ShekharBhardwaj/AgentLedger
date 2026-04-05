@@ -669,7 +669,13 @@ async function loadSessions(silent = false) {
       return `
       <div class="session-item ${s.session_id === activeSessionId ? 'active' : ''}"
            onclick="loadSession('${escHtml(s.session_id)}')">
-        <div class="session-id">${escHtml(s.session_id)}</div>
+        <div style="display:flex;align-items:center;gap:4px">
+          <div class="session-id" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s.session_id)}</div>
+          <button class="delete-session-btn" title="Delete session"
+            onclick="event.stopPropagation();deleteSession('${escHtml(s.session_id)}')"
+            style="flex-shrink:0;background:none;border:none;cursor:pointer;color:#444;font-size:12px;padding:2px 4px;border-radius:3px;line-height:1"
+            onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#444'">✕</button>
+        </div>
         <div class="session-meta">
           <span>${s.call_count} call${s.call_count !== 1 ? 's' : ''}</span>
           <span>${ms(s.total_latency_ms)}</span>
@@ -682,6 +688,24 @@ async function loadSessions(silent = false) {
     }).join('');
   } catch(e) {
     if (!silent) el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
+  }
+}
+
+// ── Session delete ───────────────────────────────────────────────────────────
+
+async function deleteSession(sessionId) {
+  if (!confirm(`Delete session "${sessionId}" and all its calls?`)) return;
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(sessionId), { method: 'DELETE' });
+    if (!res.ok) { alert('Failed to delete session.'); return; }
+    if (activeSessionId === sessionId) {
+      activeSessionId = null;
+      document.getElementById('detail-body').innerHTML = '<div class="placeholder">Select a session to inspect</div>';
+      document.getElementById('detail-header').innerHTML = '';
+    }
+    loadSessions();
+  } catch(e) {
+    alert('Failed to delete session.');
   }
 }
 
