@@ -69,6 +69,7 @@ from .normalize import (
 )
 from .otel import emit_span
 from .ratelimit import RateLimitConfig, RateLimiter
+from .redact import Redactor, apply_capture_policy, normalize_capture_level
 from .store import Store
 from .stream import reconstruct_from_sse
 
@@ -168,6 +169,8 @@ def create_app(
     rate_limit_config: Optional[RateLimitConfig] = None,
     async_capture: bool = False,
     capture_queue_max: int = 10_000,
+    capture_level: str = "full",
+    redactor: Optional[Redactor] = None,
 ) -> FastAPI:
 
     broadcaster = _Broadcaster()
@@ -181,6 +184,10 @@ def create_app(
     # (a just-captured call may not be queryable for a brief moment). Default off.
     _async_capture = async_capture
     _capture_queue: asyncio.Queue = asyncio.Queue(maxsize=capture_queue_max)
+    # Data governance: capture level + optional redaction, applied to the stored copy
+    # only (never to the response returned to the agent).
+    _capture_level = normalize_capture_level(capture_level)
+    _redactor = redactor
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -213,6 +220,9 @@ def create_app(
     async def _persist(job: _CaptureJob) -> None:
         """Do the post-call work for a captured request. The store write is the
         critical part (and counts the capture); span/broadcast/alerts are best-effort."""
+        # Apply governance here so every sink (store, OTel span, dashboard) sees the
+        # redacted/leveled copy. In async mode this runs off the request hot path.
+        apply_capture_policy(job.req, job.resp, _capture_level, _redactor)
         store = app.state.store
         await store.save(
             job.action_id, job.req, job.resp,
@@ -540,8 +550,10 @@ def create_app(
                     # Save blocked call with empty response, then reject
                     try:
                         canonical_req = normalize_request(json.loads(body_bytes), path)
+                        blocked_resp = _empty_response(0)
+                        apply_capture_policy(canonical_req, blocked_resp, _capture_level, _redactor)
                         await request.app.state.store.save(
-                            action_id, canonical_req, _empty_response(0),
+                            action_id, canonical_req, blocked_resp,
                             status_code=429, error_detail=budget_error, **meta,
                         )
                         await broadcaster.broadcast({

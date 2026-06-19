@@ -21,6 +21,12 @@ Reads config from environment variables:
                                       latency to the call — eventually consistent (default: off)
     AGENTLEDGER_CAPTURE_QUEUE_MAX     Max queued captures before shedding load (default: 10000)
 
+  Data governance (applies to the stored copy only — the agent's response is untouched):
+    AGENTLEDGER_CAPTURE_LEVEL         full (default) | metadata (drop prompts/responses, keep metrics)
+    AGENTLEDGER_REDACT                Redact PII/secrets: "all" or a comma list of categories
+                                      (email,ssn,credit_card,ip,api_key) (default: off)
+    AGENTLEDGER_REDACT_PATTERNS       Optional JSON of extra regexes — {"label": "regex", ...} or ["regex", ...]
+
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
     AGENTLEDGER_BUDGET_SESSION        Max USD per session_id (default: none)
     AGENTLEDGER_BUDGET_AGENT          Max USD per agent_name per calendar day (default: none)
@@ -59,6 +65,7 @@ from .alerts import AlertConfig
 from .app import create_app
 from .otel import init_otel
 from .ratelimit import RateLimitConfig
+from .redact import build_redactor
 
 
 class _QuietFilter(logging.Filter):
@@ -119,6 +126,11 @@ app = create_app(
     ),
     async_capture=os.environ.get("AGENTLEDGER_ASYNC_CAPTURE", "").lower() in ("1", "true", "yes", "on"),
     capture_queue_max=int(os.environ.get("AGENTLEDGER_CAPTURE_QUEUE_MAX", "10000")),
+    capture_level=os.environ.get("AGENTLEDGER_CAPTURE_LEVEL", "full"),
+    redactor=build_redactor(
+        os.environ.get("AGENTLEDGER_REDACT", ""),
+        os.environ.get("AGENTLEDGER_REDACT_PATTERNS", ""),
+    ),
 )
 
 _logger = logging.getLogger("agentledger")

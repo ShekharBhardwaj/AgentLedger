@@ -259,6 +259,9 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_EXTRA_PATHS` | No | _(none)_ | Comma-separated additional request paths to capture, e.g. `v1/responses,v1/custom`. Built-in paths (`v1/chat/completions`, `v1/messages`, `v1/responses`) are always captured. |
 | `AGENTLEDGER_ASYNC_CAPTURE` | No | `off` | Persist captures on a background worker so storage never adds latency to the agent's call. Trade-off: reads become **eventually consistent** (a just-captured call may not be queryable for a brief moment). Recommended for high throughput. |
 | `AGENTLEDGER_CAPTURE_QUEUE_MAX` | No | `10000` | Max captures buffered in async mode before load is shed (drops are counted in `/metrics`). |
+| `AGENTLEDGER_CAPTURE_LEVEL` | No | `full` | `full` stores everything; `metadata` stores only metrics/metadata (model, tokens, cost, latency, agent, status) and drops prompts, responses, and tools. |
+| `AGENTLEDGER_REDACT` | No | _(off)_ | Redact PII/secrets in stored data: `all`, or a comma list of `email,ssn,credit_card,ip,api_key`. Replaces matches with `[REDACTED:<label>]`. Only the stored copy is affected — the agent's response is untouched. |
+| `AGENTLEDGER_REDACT_PATTERNS` | No | _(none)_ | Extra redaction regexes as JSON: `{"label": "regex", ...}` or `["regex", ...]`. |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 

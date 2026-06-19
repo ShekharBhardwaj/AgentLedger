@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checksum a "signed" trail).
 
 ### Added
+- **Data governance — capture levels & redaction.** `AGENTLEDGER_CAPTURE_LEVEL=metadata`
+  stores only metrics/metadata (model, tokens, cost, latency, agent, status) and drops
+  prompts, responses, and tools. `AGENTLEDGER_REDACT` (`all` or a comma list of
+  `email,ssn,credit_card,ip,api_key`) plus `AGENTLEDGER_REDACT_PATTERNS` (custom regexes)
+  replace PII/secrets with `[REDACTED:<label>]` before anything is stored, traced, or
+  broadcast. Governance transforms only the captured copy — the agent always receives the
+  real, unmodified upstream response. (In async mode, redaction runs off the hot path.)
 - **Async ingestion (opt-in)** via `AGENTLEDGER_ASYNC_CAPTURE`: post-call persistence
   (store write, OTel span, dashboard broadcast, alerts) runs on a bounded background
   worker so it never adds latency to the agent's call. When the queue is full (default
