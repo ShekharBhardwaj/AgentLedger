@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ruff` configuration and a `[dev]` tooling extra (`pytest-cov`, `ruff`).
 
 ### Fixed
+- **Postgres data loss:** the production Postgres backend typed `session_id` as `UUID`
+  and cast every id with `uuid.UUID(...)`. Agent session ids are arbitrary strings — the
+  proxy mints `auto-<date>` when no header is supplied, and users pass human-readable run
+  names — so any non-UUID session id raised and, because the proxy save path is fail-open,
+  was **silently dropped**. `session_id` is now `TEXT` (matching SQLite); existing databases
+  are migrated in place on connect (`ALTER COLUMN session_id TYPE TEXT`). Added a Postgres
+  regression test suite (runs in CI against a Postgres service; skipped locally without one).
 - **Cost computation:** `compute_cost` now matches the longest (most specific) pricing
   pattern instead of the first substring match. Previously `gpt-4o-mini`, `o1-mini`,
   `o3-mini`, `gpt-4.1-mini`, and `gpt-4.1-nano` were each priced at their parent model's

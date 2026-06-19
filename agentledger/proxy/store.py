@@ -295,7 +295,7 @@ class _PostgresStore(Store):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS llm_calls (
                     action_id   UUID        PRIMARY KEY,
-                    session_id  UUID,
+                    session_id  TEXT,
                     timestamp   TIMESTAMPTZ NOT NULL,
                     model_id    TEXT        NOT NULL,
                     provider    TEXT        NOT NULL,
@@ -317,6 +317,20 @@ class _PostgresStore(Store):
                 pg_type = "JSONB" if col in ("tool_results",) else col_type
                 await conn.execute(
                     f"ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS {col} {pg_type}"
+                )
+            # Migrate legacy databases where session_id was a UUID column. Agent
+            # session ids are arbitrary strings (e.g. "auto-2026-01-01" or a
+            # human-readable run name), not UUIDs — a UUID column silently rejected
+            # every non-UUID id. Convert in place; the guard avoids a needless table
+            # rewrite on already-migrated databases.
+            session_type = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'llm_calls' AND column_name = 'session_id'"
+            )
+            if session_type == "uuid":
+                await conn.execute(
+                    "ALTER TABLE llm_calls ALTER COLUMN session_id TYPE TEXT "
+                    "USING session_id::text"
                 )
         return cls(pool)
 
@@ -345,7 +359,7 @@ class _PostgresStore(Store):
                      $26,$27)
                 """,
                 uuid.UUID(action_id),
-                uuid.UUID(session_id) if session_id else None,
+                session_id,
                 req.timestamp, req.model_id, req.provider,
                 json.dumps(req.messages),
                 json.dumps(req.tools) if req.tools is not None else None,
@@ -370,7 +384,7 @@ class _PostgresStore(Store):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM llm_calls WHERE session_id = $1 ORDER BY timestamp ASC",
-                uuid.UUID(session_id),
+                session_id,
             )
         return [_pg_row(r) for r in rows]
 
@@ -418,7 +432,7 @@ class _PostgresStore(Store):
         async with self._pool.acquire() as conn:
             val = await conn.fetchval(
                 "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE session_id = $1 AND status_code = 200",
-                uuid.UUID(session_id),
+                session_id,
             )
         return float(val or 0)
 
@@ -445,7 +459,7 @@ class _PostgresStore(Store):
     async def delete_session(self, session_id: str) -> int:
         async with self._pool.acquire() as conn:
             result = await conn.execute(
-                "DELETE FROM llm_calls WHERE session_id = $1", uuid.UUID(session_id)
+                "DELETE FROM llm_calls WHERE session_id = $1", session_id
             )
         return int(result.split()[-1])  # "DELETE N"
 

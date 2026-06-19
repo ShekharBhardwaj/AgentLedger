@@ -35,6 +35,20 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentledger_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +64,8 @@ jobs:
         run: python -m compileall agentledger/
 
       - name: Run tests with coverage
+        env:
+          AGENTLEDGER_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/agentledger_test
         run: pytest --cov=agentledger --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
       - name: Upload coverage artifact
