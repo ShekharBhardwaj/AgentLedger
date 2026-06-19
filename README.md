@@ -1,7 +1,9 @@
 # AgentLedger
 
 [![CI](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/codeql.yml/badge.svg)](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/codeql.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentic-ledger)](https://pypi.org/project/agentic-ledger/)
+[![Python versions](https://img.shields.io/pypi/pyversions/agentic-ledger)](https://pypi.org/project/agentic-ledger/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/shekharbhardwaj/agentledger)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
