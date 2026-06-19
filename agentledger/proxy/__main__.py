@@ -9,6 +9,8 @@ Reads config from environment variables:
     AGENTLEDGER_HOST                  Bind host (default: 0.0.0.0)
     AGENTLEDGER_PORT                  Bind port (default: 8000)
     AGENTLEDGER_API_KEY               Protect dashboard/API endpoints (default: none)
+    AGENTLEDGER_INGEST_KEY            Require x-agentledger-ingest-key on the proxy path,
+                                      closing the open relay (default: none — open)
     AGENTLEDGER_EXTRA_PATHS           Extra comma-separated paths to capture (default: none)
 
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
@@ -108,5 +110,19 @@ app = create_app(
         daily_spend=_float_env("AGENTLEDGER_ALERT_DAILY_SPEND"),
     ),
 )
+
+_logger = logging.getLogger("agentledger")
+if not os.environ.get("AGENTLEDGER_INGEST_KEY"):
+    _logger.warning(
+        "AGENTLEDGER_INGEST_KEY is not set — the proxy will forward requests from "
+        "ANYONE who can reach it (open relay). Set it to require x-agentledger-ingest-key "
+        "before exposing the proxy beyond localhost."
+    )
+if not os.environ.get("AGENTLEDGER_API_KEY"):
+    _logger.warning(
+        "AGENTLEDGER_API_KEY is not set — the dashboard, API, and MCP endpoints are "
+        "UNAUTHENTICATED. Set it (or configure API tokens) before exposing AgentLedger "
+        "beyond localhost."
+    )
 
 uvicorn.run(app, host=host, port=port)

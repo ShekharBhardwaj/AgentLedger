@@ -70,6 +70,8 @@ _AL_HEADERS = {
     "x-agentledger-environment",
     "x-agentledger-handoff-from",
     "x-agentledger-handoff-to",
+    "x-agentledger-ingest-key",
+    "x-agentledger-api-key",
 }
 
 
@@ -143,6 +145,10 @@ def create_app(
     app.state.capture_dropped = 0
 
     _api_key = os.environ.get("AGENTLEDGER_API_KEY")
+    # Optional proxy-ingest key. When set, the proxy refuses to forward a request
+    # unless it carries a matching x-agentledger-ingest-key — closing the open relay.
+    # When unset the proxy forwards anything (zero-config dev UX); __main__ warns loudly.
+    _ingest_key = os.environ.get("AGENTLEDGER_INGEST_KEY")
 
     def _check_auth(request: Request) -> None:
         if not _api_key:
@@ -277,6 +283,18 @@ def create_app(
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def proxy(request: Request, path: str) -> Response:
+        # Proxy-ingest auth: gate forwarding behind a dedicated key when configured.
+        if _ingest_key:
+            supplied = request.headers.get("x-agentledger-ingest-key")
+            if not supplied or not hmac.compare_digest(supplied, _ingest_key):
+                return JSONResponse(
+                    {"error": {
+                        "type": "unauthorized",
+                        "message": "Missing or invalid x-agentledger-ingest-key.",
+                    }},
+                    status_code=401,
+                )
+
         body_bytes = await request.body()
 
         is_llm_path = request.method == "POST" and path in _LLM_PATHS and body_bytes

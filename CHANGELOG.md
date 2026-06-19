@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- Optional **proxy-ingest key** (`AGENTLEDGER_INGEST_KEY`): when set, the proxy only
+  forwards requests that carry a matching `x-agentledger-ingest-key`, closing the open
+  relay. Off by default to preserve the zero-config quickstart, with a loud startup
+  warning when unset. The key (and the dashboard `x-agentledger-api-key`) are stripped
+  before forwarding upstream.
 - API key comparison is now constant-time (`hmac.compare_digest`), removing a timing
   oracle that could leak the key.
 - Compliance export integrity is now honest about its guarantee. The default remains a
