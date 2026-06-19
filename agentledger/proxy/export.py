@@ -119,9 +119,12 @@ def render_html_report(export: dict[str, Any]) -> str:
         hf, ht = call.get("handoff_from"), call.get("handoff_to")
         if hf or ht:
             parts = []
-            if hf: parts.append(esc(hf))
-            if hf and ht: parts.append("→")
-            if ht: parts.append(esc(ht))
+            if hf:
+                parts.append(esc(hf))
+            if hf and ht:
+                parts.append("→")
+            if ht:
+                parts.append(esc(ht))
             handoff_html = f"<p class='label'>Handoff</p><p>{' '.join(parts)}</p>"
 
         warning_badge = '<span style="background:#78350f;color:#fbbf24;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;margin-left:8px">⚠ budget</span>' if is_warning else ""

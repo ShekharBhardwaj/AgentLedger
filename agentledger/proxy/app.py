@@ -40,21 +40,21 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-logger = logging.getLogger(__name__)
-
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .dashboard import get_dashboard_html
 from .alerts import AlertConfig, check_and_fire
-from .otel import emit_span
-from .ratelimit import RateLimitConfig, RateLimiter
+from .dashboard import get_dashboard_html
 from .export import build_export, render_html_report
 from .mcp import handle_mcp
-from .normalize import CanonicalRequest, CanonicalResponse, normalize_request, normalize_response
+from .normalize import CanonicalResponse, normalize_request, normalize_response
+from .otel import emit_span
+from .ratelimit import RateLimitConfig, RateLimiter
 from .store import Store
 from .stream import reconstruct_from_sse
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_LLM_PATHS = {"v1/chat/completions", "v1/messages", "v1/responses"}
 _extra = os.getenv("AGENTLEDGER_EXTRA_PATHS", "")

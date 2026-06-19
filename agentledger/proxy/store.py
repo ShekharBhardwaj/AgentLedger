@@ -10,6 +10,7 @@ Schema is created automatically on first connect. New columns are added
 non-destructively so existing databases survive upgrades.
 """
 
+import contextlib
 import datetime
 import json
 import uuid
@@ -129,10 +130,9 @@ class _SqliteStore(Store):
             ON llm_calls (session_id) WHERE session_id IS NOT NULL
         """)
         for col, col_type in _MIGRATION_COLUMNS:
-            try:
+            # Column already exists on an upgraded DB — that's fine, skip it.
+            with contextlib.suppress(Exception):
                 await db.execute(f"ALTER TABLE llm_calls ADD COLUMN {col} {col_type}")
-            except Exception:
-                pass
         await db.commit()
         return cls(db)
 
