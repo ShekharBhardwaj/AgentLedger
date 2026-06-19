@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checksum a "signed" trail).
 
 ### Added
+- **Async ingestion (opt-in)** via `AGENTLEDGER_ASYNC_CAPTURE`: post-call persistence
+  (store write, OTel span, dashboard broadcast, alerts) runs on a bounded background
+  worker so it never adds latency to the agent's call. When the queue is full (default
+  10000, `AGENTLEDGER_CAPTURE_QUEUE_MAX`) load is shed and counted rather than blocking.
+  Default off — sync mode keeps read-after-write; async mode is eventually consistent.
+- **`/metrics`** Prometheus endpoint: captures persisted/dropped (counters), capture queue
+  depth, and whether async capture is enabled. Low-cardinality (no per-session labels).
 - **Scoped, role-based API tokens** (`viewer` < `editor` < `admin`) as an alternative to
   sharing the master key. Tokens are random secrets shown once at creation; only their
   SHA-256 hash is stored, and each can be given an expiry or revoked. Managed via

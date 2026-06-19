@@ -31,6 +31,7 @@ Or via CLI:
     python -m agentledger.proxy
 """
 
+import asyncio
 import datetime
 import hmac
 import json
@@ -39,6 +40,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 import httpx
@@ -59,7 +61,12 @@ from .auth import (
 from .dashboard import get_dashboard_html
 from .export import build_export, render_html_report
 from .mcp import handle_mcp
-from .normalize import CanonicalResponse, normalize_request, normalize_response
+from .normalize import (
+    CanonicalRequest,
+    CanonicalResponse,
+    normalize_request,
+    normalize_response,
+)
 from .otel import emit_span
 from .ratelimit import RateLimitConfig, RateLimiter
 from .store import Store
@@ -83,6 +90,19 @@ _AL_HEADERS = {
     "x-agentledger-ingest-key",
     "x-agentledger-api-key",
 }
+
+
+@dataclass
+class _CaptureJob:
+    """The post-call work for one captured request — persisted inline (sync mode)
+    or off the hot path by the background worker (async mode)."""
+    action_id: str
+    req: CanonicalRequest
+    resp: CanonicalResponse
+    status_code: int
+    error_detail: Optional[str]
+    meta: dict
+    budget_warning: Optional[str]
 
 
 def _extract_token(carrier) -> Optional[str]:
@@ -146,6 +166,8 @@ def create_app(
     budget_action: str = "block",   # "block" | "warn" | "both"
     alert_config: Optional[AlertConfig] = None,
     rate_limit_config: Optional[RateLimitConfig] = None,
+    async_capture: bool = False,
+    capture_queue_max: int = 10_000,
 ) -> FastAPI:
 
     broadcaster = _Broadcaster()
@@ -154,6 +176,11 @@ def create_app(
         webhook_url=None, cost_per_call=None,
         latency_ms=None, error_rate=None, daily_spend=None,
     )
+    # When async_capture is on, post-call persistence runs on a background worker so
+    # it never adds latency to the agent's call — at the cost of read-after-write
+    # (a just-captured call may not be queryable for a brief moment). Default off.
+    _async_capture = async_capture
+    _capture_queue: asyncio.Queue = asyncio.Queue(maxsize=capture_queue_max)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -163,7 +190,17 @@ def create_app(
             timeout=httpx.Timeout(120.0),
         )
         app.state.broadcaster = broadcaster
+        worker: Optional[asyncio.Task] = None
+        if _async_capture:
+            worker = asyncio.create_task(_capture_worker(app))
         yield
+        if worker is not None:
+            # Flush pending captures, then stop the worker, before closing the store.
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(_capture_queue.join(), timeout=10.0)
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
         await app.state.store.close()
         await app.state.client.aclose()
 
@@ -171,6 +208,57 @@ def create_app(
     # Count calls whose capture failed (served to the agent but not recorded), so
     # silent data loss is observable instead of invisible. Surfaced via /readyz.
     app.state.capture_dropped = 0
+    app.state.capture_persisted = 0
+
+    async def _persist(job: _CaptureJob) -> None:
+        """Do the post-call work for a captured request. The store write is the
+        critical part (and counts the capture); span/broadcast/alerts are best-effort."""
+        store = app.state.store
+        await store.save(
+            job.action_id, job.req, job.resp,
+            status_code=job.status_code, error_detail=job.error_detail, **job.meta,
+        )
+        app.state.capture_persisted += 1
+        with suppress(Exception):
+            emit_span(job.action_id, job.req, job.resp, status_code=job.status_code, **job.meta)
+        with suppress(Exception):
+            await broadcaster.broadcast({
+                "type": "call",
+                "action_id": job.action_id,
+                "session_id": job.meta.get("session_id"),
+                "status_code": job.status_code,
+                "budget_warning": bool(job.budget_warning),
+            })
+        with suppress(Exception):
+            await check_and_fire(
+                _alert_config, store, job.resp, job.action_id,
+                job.meta.get("session_id"), job.meta.get("agent_name"), job.status_code,
+            )
+
+    async def _capture_worker(app: FastAPI) -> None:
+        """Drain the capture queue, persisting each job off the request hot path."""
+        while True:
+            job = await _capture_queue.get()
+            try:
+                await _persist(job)
+            except Exception:
+                _record_capture_drop(app, job.action_id)
+            finally:
+                _capture_queue.task_done()
+
+    async def _capture(job: _CaptureJob) -> None:
+        """Persist a captured call — enqueued (async mode) or inline (sync mode)."""
+        if _async_capture:
+            try:
+                _capture_queue.put_nowait(job)
+            except asyncio.QueueFull:
+                # Shed load rather than block the agent's response; the drop is counted.
+                _record_capture_drop(app, job.action_id)
+        else:
+            try:
+                await _persist(job)
+            except Exception:
+                _record_capture_drop(app, job.action_id)
 
     _api_key = os.environ.get("AGENTLEDGER_API_KEY")
     # Optional proxy-ingest key. When set, the proxy refuses to forward a request
@@ -235,6 +323,28 @@ def create_app(
             "capture_dropped": getattr(app.state, "capture_dropped", 0),
         }
         return JSONResponse(body, status_code=200 if db_ok else 503)
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        """Prometheus text-format metrics (low-cardinality; no per-session labels)."""
+        persisted = getattr(app.state, "capture_persisted", 0)
+        dropped = getattr(app.state, "capture_dropped", 0)
+        depth = _capture_queue.qsize() if _async_capture else 0
+        lines = [
+            "# HELP agentledger_captures_persisted_total Calls successfully recorded to the store.",
+            "# TYPE agentledger_captures_persisted_total counter",
+            f"agentledger_captures_persisted_total {persisted}",
+            "# HELP agentledger_captures_dropped_total Calls served but not recorded (error or queue overflow).",
+            "# TYPE agentledger_captures_dropped_total counter",
+            f"agentledger_captures_dropped_total {dropped}",
+            "# HELP agentledger_capture_queue_depth Capture jobs awaiting persistence (async mode).",
+            "# TYPE agentledger_capture_queue_depth gauge",
+            f"agentledger_capture_queue_depth {depth}",
+            "# HELP agentledger_capture_async Whether async capture is enabled (1) or not (0).",
+            "# TYPE agentledger_capture_async gauge",
+            f"agentledger_capture_async {1 if _async_capture else 0}",
+        ]
+        return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     # ── Dashboard ────────────────────────────────────────────────────────────
 
@@ -472,7 +582,7 @@ def create_app(
         if is_streaming:
             return await _streaming_proxy(
                 request, path, body_bytes, forward_headers, action_id, meta,
-                broadcaster, _alert_config, _budget_warning,
+                _capture, _budget_warning,
             )
 
         start = time.monotonic()
@@ -498,26 +608,10 @@ def create_app(
                 else:
                     canonical_resp = _empty_response(latency_ms)
                     error_detail = _extract_error(upstream_resp)
-                await request.app.state.store.save(
+                await _capture(_CaptureJob(
                     action_id, canonical_req, canonical_resp,
-                    status_code=status_code, error_detail=error_detail, **meta,
-                )
-                emit_span(
-                    action_id, canonical_req, canonical_resp,
-                    status_code=status_code, **meta,
-                )
-                await broadcaster.broadcast({
-                    "type": "call",
-                    "action_id": action_id,
-                    "session_id": meta.get("session_id"),
-                    "status_code": status_code,
-                    "budget_warning": bool(_budget_warning),
-                })
-                await check_and_fire(
-                    _alert_config, request.app.state.store,
-                    canonical_resp, action_id,
-                    meta.get("session_id"), meta.get("agent_name"), status_code,
-                )
+                    status_code, error_detail, meta, _budget_warning,
+                ))
             except Exception:
                 _record_capture_drop(request.app, action_id)
 
@@ -538,12 +632,10 @@ async def _streaming_proxy(
     forward_headers: dict,
     action_id: str,
     meta: dict,
-    broadcaster: _Broadcaster,
-    alert_config: Optional[AlertConfig] = None,
+    capture,
     budget_warning: Optional[str] = None,
 ) -> StreamingResponse:
     client: httpx.AsyncClient = request.app.state.client
-    store: Store = request.app.state.store
 
     stream_ctx = client.stream(
         method=request.method,
@@ -579,26 +671,9 @@ async def _streaming_proxy(
                         b"".join(chunks), latency_ms, canonical_req.model_id
                     )
                     _err = f"budget_warning: {budget_warning}" if budget_warning else None
-                    await store.save(
-                        action_id, canonical_req, canonical_resp,
-                        status_code=200, error_detail=_err, **meta,
-                    )
-                    emit_span(
-                        action_id, canonical_req, canonical_resp,
-                        status_code=200, **meta,
-                    )
-                    await broadcaster.broadcast({
-                        "type": "call",
-                        "action_id": action_id,
-                        "session_id": meta.get("session_id"),
-                        "status_code": 200,
-                        "budget_warning": bool(budget_warning),
-                    })
-                    if alert_config:
-                        await check_and_fire(
-                            alert_config, store, canonical_resp, action_id,
-                            meta.get("session_id"), meta.get("agent_name"), 200,
-                        )
+                    await capture(_CaptureJob(
+                        action_id, canonical_req, canonical_resp, 200, _err, meta, budget_warning,
+                    ))
                 except Exception:
                     _record_capture_drop(request.app, action_id)
         finally:

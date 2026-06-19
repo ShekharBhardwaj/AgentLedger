@@ -16,6 +16,11 @@ Reads config from environment variables:
                                       hmac-sha256 tag instead of a sha256 checksum (default: none)
     AGENTLEDGER_EXTRA_PATHS           Extra comma-separated paths to capture (default: none)
 
+  Performance (capture off the request hot path):
+    AGENTLEDGER_ASYNC_CAPTURE         Persist captures on a background worker so they never add
+                                      latency to the call — eventually consistent (default: off)
+    AGENTLEDGER_CAPTURE_QUEUE_MAX     Max queued captures before shedding load (default: 10000)
+
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
     AGENTLEDGER_BUDGET_SESSION        Max USD per session_id (default: none)
     AGENTLEDGER_BUDGET_AGENT          Max USD per agent_name per calendar day (default: none)
@@ -112,6 +117,8 @@ app = create_app(
         error_rate=_float_env("AGENTLEDGER_ALERT_ERROR_RATE"),
         daily_spend=_float_env("AGENTLEDGER_ALERT_DAILY_SPEND"),
     ),
+    async_capture=os.environ.get("AGENTLEDGER_ASYNC_CAPTURE", "").lower() in ("1", "true", "yes", "on"),
+    capture_queue_max=int(os.environ.get("AGENTLEDGER_CAPTURE_QUEUE_MAX", "10000")),
 )
 
 _logger = logging.getLogger("agentledger")

@@ -167,7 +167,9 @@ Every LLM call is stored with:
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Health check — `{"status":"ok","version":"..."}`. No auth required. |
+| `GET` | `/health` | Liveness — `{"status":"ok","version":"..."}`. No auth, never touches the store. |
+| `GET` | `/readyz` | Readiness — pings the store; `503` when unreachable. Also reports `capture_dropped`. |
+| `GET` | `/metrics` | Prometheus metrics (captures persisted/dropped, queue depth). |
 | `GET` | `/` | Live dashboard |
 | `WS` | `/ws` | WebSocket stream — powers live dashboard updates |
 | `GET` | `/api/sessions` | List recent sessions with aggregated stats |
@@ -255,6 +257,8 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_INGEST_KEY` | No | _(none)_ | When set, the proxy forwards a request only if it carries a matching `x-agentledger-ingest-key` header — closing the open relay. Off by default; a loud startup warning fires when unset. |
 | `AGENTLEDGER_EXPORT_HMAC_KEY` | No | _(none)_ | When set, compliance exports carry a tamper-evident keyed `hmac-sha256` integrity tag instead of a plain `sha256` checksum. |
 | `AGENTLEDGER_EXTRA_PATHS` | No | _(none)_ | Comma-separated additional request paths to capture, e.g. `v1/responses,v1/custom`. Built-in paths (`v1/chat/completions`, `v1/messages`, `v1/responses`) are always captured. |
+| `AGENTLEDGER_ASYNC_CAPTURE` | No | `off` | Persist captures on a background worker so storage never adds latency to the agent's call. Trade-off: reads become **eventually consistent** (a just-captured call may not be queryable for a brief moment). Recommended for high throughput. |
+| `AGENTLEDGER_CAPTURE_QUEUE_MAX` | No | `10000` | Max captures buffered in async mode before load is shed (drops are counted in `/metrics`). |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 
