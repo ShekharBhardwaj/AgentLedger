@@ -187,7 +187,7 @@ curl http://localhost:8000/session/run-1
 # Search across all sessions
 curl "http://localhost:8000/api/search?q=failed+to+connect"
 
-# Download JSON audit trail (includes SHA-256 hash for tamper detection)
+# Download JSON audit trail (includes an integrity tag; keyed HMAC when configured)
 curl http://localhost:8000/export/run-1 -o audit-run-1.json
 
 # Printable HTML report — open in browser, print to PDF
@@ -544,17 +544,17 @@ Spans are grouped into traces by `session_id` — all calls in a session appear 
 
 ## Compliance export
 
-Every session can be exported as a signed audit trail — useful for regulated industries, internal audits, or passing traces to external tools.
+Every session can be exported as an integrity-tagged audit trail — useful for regulated industries, internal audits, or passing traces to external tools.
 
 ```bash
-# Machine-readable JSON with SHA-256 integrity hash
+# Machine-readable JSON with an integrity tag over the calls array
 curl http://localhost:8000/export/run-1 -o audit-run-1.json
 
 # Printable HTML — open in browser and print to PDF
 open http://localhost:8000/export/run-1/report
 ```
 
-The JSON export includes a `sha256` hash of the calls array. Recipients can verify the export has not been modified after generation.
+The JSON export carries an integrity tag over the calls array. By default this is a `sha256` **checksum** — it catches accidental corruption but is not a signature (anyone who edits the calls can recompute it). Set `AGENTLEDGER_EXPORT_HMAC_KEY` to switch to a keyed **`hmac-sha256`** tag, which is tamper-evident: a recipient holding the key can detect any modification, and the tag cannot be forged without the key.
 
 ---
 

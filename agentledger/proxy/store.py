@@ -92,6 +92,11 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    async def ping(self) -> None:
+        """Raise if the backend is not reachable. Used by the readiness probe."""
+        ...
+
+    @abstractmethod
     async def close(self) -> None: ...
 
 
@@ -254,6 +259,9 @@ class _SqliteStore(Store):
             deleted = cur.rowcount
         await self._db.commit()
         return deleted
+
+    async def ping(self) -> None:
+        await self._db.execute("SELECT 1")
 
     async def close(self) -> None:
         await self._db.close()
@@ -462,6 +470,10 @@ class _PostgresStore(Store):
                 "DELETE FROM llm_calls WHERE session_id = $1", session_id
             )
         return int(result.split()[-1])  # "DELETE N"
+
+    async def ping(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
 
     async def close(self) -> None:
         await self._pool.close()

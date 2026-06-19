@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- API key comparison is now constant-time (`hmac.compare_digest`), removing a timing
+  oracle that could leak the key.
+- Compliance export integrity is now honest about its guarantee. The default remains a
+  SHA-256 **checksum** (catches corruption, not tampering — anyone who edits the calls
+  can recompute it). Set `AGENTLEDGER_EXPORT_HMAC_KEY` to emit a tamper-evident keyed
+  `hmac-sha256` tag instead. README/docs wording corrected (no longer calls the default
+  checksum a "signed" trail).
+
 ### Added
-- Comprehensive automated test suite (`tests/`) with ~250 tests covering request/response
+- `/readyz` readiness probe (runs a store `SELECT 1`; returns 503 when the store is
+  unreachable) so load balancers and k8s can gate traffic. `/health` remains a pure
+  liveness check that never touches the store.
+- A `capture_dropped` counter: when a call is served upstream but its record can't be
+  persisted, the proxy still fails open, but the loss is now logged at WARNING and
+  counted (surfaced via `/readyz`) instead of being silently swallowed.
+
+- Comprehensive automated test suite (`tests/`) with ~280 tests covering request/response
   normalization, streaming SSE reconstruction, pricing, rate limiting, budgets, the storage
   layer, the proxy request path, compliance export, the MCP server, and webhook alerts.
 - Shared pytest harness (`tests/conftest.py`) with a mock-upstream proxy fixture and
@@ -35,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input). Captured costs for these models are now correct.
 
 ### Changed
+- Rate-limiter memory is now bounded: idle per-session/agent/user windows are evicted as
+  they age out, with a sweep guarding against pathological key cardinality. Corrected the
+  docstring that overclaimed cross-process safety (limits are enforced per process).
 - Stopped tracking the runtime SQLite database (`agentledger.db`) in git and added `*.db`
   to `.gitignore`. The database is a runtime artifact and may contain captured prompt data.
 

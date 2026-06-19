@@ -12,14 +12,21 @@ All limits are optional — only configured ones are enforced.
 When a limit is exceeded the proxy returns HTTP 429 with a JSON error body.
 The agent receives it like any other upstream error — no special handling needed.
 
-Uses a sliding window (60-second window, in-memory). Single-process safe.
-No Redis or external state required.
+Uses a sliding 60-second window kept in memory. Limits are enforced PER PROCESS:
+each worker/replica tracks its own counts, so behind N workers the effective limit
+is up to N times the configured value. A single shared limit across replicas would
+require a shared backend (e.g. Redis); that is intentionally out of scope here.
+Idle keys are evicted as they age out, so memory stays bounded.
 """
 
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
+
+# Safety cap on the number of distinct rate-limit keys retained, in case of very
+# high session/user cardinality. When exceeded, fully-aged-out windows are swept.
+_MAX_TRACKED_KEYS = 50_000
 
 
 @dataclass
@@ -36,9 +43,10 @@ class RateLimitConfig:
 
 class RateLimiter:
 
-    def __init__(self, config: RateLimitConfig) -> None:
+    def __init__(self, config: RateLimitConfig, max_keys: int = _MAX_TRACKED_KEYS) -> None:
         self._config = config
-        self._windows: dict[str, deque] = defaultdict(deque)
+        self._windows: dict[str, deque] = {}
+        self._max_keys = max_keys
 
     def check(
         self,
@@ -67,8 +75,13 @@ class RateLimiter:
 
         # Check all windows before recording — don't partially record then reject
         for label, key, limit in checks:
-            window = self._windows[key]
+            window = self._windows.get(key)
+            if window is None:
+                continue  # no history for this key → under limit
             _evict(window, now)
+            if not window:
+                del self._windows[key]  # reclaim a key that has fully aged out
+                continue
             if len(window) >= limit:
                 return (
                     f"Rate limit exceeded: {limit} requests/min per {label}. "
@@ -77,9 +90,21 @@ class RateLimiter:
 
         # All checks passed — record this request in every window
         for _, key, _ in checks:
-            self._windows[key].append(now)
+            self._windows.setdefault(key, deque()).append(now)
+
+        # Bound memory under pathological key cardinality (e.g. a unique session id
+        # per request): periodically drop windows that have fully aged out.
+        if len(self._windows) > self._max_keys:
+            self._sweep(now)
 
         return None
+
+    def _sweep(self, now: float) -> None:
+        for key in list(self._windows.keys()):
+            window = self._windows[key]
+            _evict(window, now)
+            if not window:
+                del self._windows[key]
 
 
 def _evict(window: deque, now: float) -> None:

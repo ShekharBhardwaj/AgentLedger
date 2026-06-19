@@ -32,12 +32,13 @@ Or via CLI:
 """
 
 import datetime
+import hmac
 import json
 import logging
 import os
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import AsyncIterator, Optional
 
 import httpx
@@ -70,6 +71,17 @@ _AL_HEADERS = {
     "x-agentledger-handoff-from",
     "x-agentledger-handoff-to",
 }
+
+
+def _record_capture_drop(app: FastAPI, action_id: Optional[str]) -> None:
+    """A call was served to the agent but could not be recorded. Never re-raise —
+    observability must not break the proxy — but make the loss visible."""
+    with suppress(Exception):
+        app.state.capture_dropped += 1
+    logger.warning(
+        "Capture failed for action_id=%s — call was served upstream but not recorded",
+        action_id, exc_info=True,
+    )
 
 
 class _Broadcaster:
@@ -126,6 +138,9 @@ def create_app(
         await app.state.client.aclose()
 
     app = FastAPI(title="AgentLedger Proxy", lifespan=lifespan)
+    # Count calls whose capture failed (served to the agent but not recorded), so
+    # silent data loss is observable instead of invisible. Surfaced via /readyz.
+    app.state.capture_dropped = 0
 
     _api_key = os.environ.get("AGENTLEDGER_API_KEY")
 
@@ -133,19 +148,40 @@ def create_app(
         if not _api_key:
             return
         supplied = request.headers.get("x-agentledger-api-key") or request.query_params.get("api_key")
-        if supplied != _api_key:
+        # Constant-time compare so the key can't be recovered via a timing oracle.
+        if not supplied or not hmac.compare_digest(supplied, _api_key):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     # ── Health ───────────────────────────────────────────────────────────────
 
     @app.get("/health")
     async def health() -> JSONResponse:
+        """Liveness — the process is up. Always 200; does not touch the store."""
         try:
             from importlib.metadata import version as _v
             _version = _v("agentic-ledger")
         except Exception:
             _version = "unknown"
         return JSONResponse({"status": "ok", "version": _version})
+
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        """Readiness — the store is reachable. 503 when it isn't, so load balancers
+        and k8s can stop routing traffic. Also surfaces the dropped-capture count."""
+        store = getattr(app.state, "store", None)
+        db_ok = False
+        if store is not None:
+            try:
+                await store.ping()
+                db_ok = True
+            except Exception:
+                logger.warning("Readiness check: store ping failed", exc_info=True)
+        body = {
+            "status": "ok" if db_ok else "unavailable",
+            "store": "ok" if db_ok else "error",
+            "capture_dropped": getattr(app.state, "capture_dropped", 0),
+        }
+        return JSONResponse(body, status_code=200 if db_ok else 503)
 
     # ── Dashboard ────────────────────────────────────────────────────────────
 
@@ -298,7 +334,7 @@ def create_app(
                             "budget_warning": False,
                         })
                     except Exception:
-                        pass
+                        _record_capture_drop(request.app, action_id)
                     return JSONResponse(
                         {"error": {"type": "budget_exceeded", "message": budget_error}},
                         status_code=429,
@@ -375,7 +411,7 @@ def create_app(
                     meta.get("session_id"), meta.get("agent_name"), status_code,
                 )
             except Exception:
-                pass
+                _record_capture_drop(request.app, action_id)
 
         return Response(
             content=upstream_resp.content,
@@ -456,7 +492,7 @@ async def _streaming_proxy(
                             meta.get("session_id"), meta.get("agent_name"), 200,
                         )
                 except Exception:
-                    pass
+                    _record_capture_drop(request.app, action_id)
         finally:
             await stream_ctx.__aexit__(None, None, None)
 

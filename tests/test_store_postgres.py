@@ -104,6 +104,11 @@ async def test_session_cost_and_delete_with_non_uuid_id(pg_store):
     assert await pg_store.get_session(sid) == []
 
 
+async def test_ping_succeeds(pg_store):
+    """The Postgres readiness ping runs a trivial query without raising."""
+    await pg_store.ping()
+
+
 async def test_list_sessions_aggregates_non_uuid_ids(pg_store):
     """list_sessions groups and counts non-UUID session ids."""
     await pg_store.save(str(uuid.uuid4()), _req(), _resp(), session_id="run-a", status_code=200)
