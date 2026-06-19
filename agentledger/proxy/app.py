@@ -46,6 +46,16 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .alerts import AlertConfig, check_and_fire
+from .auth import (
+    ROLE_ADMIN,
+    ROLE_EDITOR,
+    ROLE_VIEWER,
+    Principal,
+    generate_token,
+    hash_token,
+    role_satisfies,
+    valid_role,
+)
 from .dashboard import get_dashboard_html
 from .export import build_export, render_html_report
 from .mcp import handle_mcp
@@ -73,6 +83,24 @@ _AL_HEADERS = {
     "x-agentledger-ingest-key",
     "x-agentledger-api-key",
 }
+
+
+def _extract_token(carrier) -> Optional[str]:
+    """Pull an API token from a request/websocket: Bearer header, x-agentledger-token, or ?token."""
+    authz = carrier.headers.get("authorization") or ""
+    if authz.lower().startswith("bearer "):
+        return authz[7:].strip() or None
+    return carrier.headers.get("x-agentledger-token") or carrier.query_params.get("token")
+
+
+def _token_is_valid(row: dict) -> bool:
+    """A token row is usable if it is not revoked, not expired, and has a known role."""
+    if row.get("revoked_at"):
+        return False
+    expires_at = row.get("expires_at")
+    if expires_at is not None and expires_at <= time.time():
+        return False
+    return valid_role(row.get("role", ""))
 
 
 def _record_capture_drop(app: FastAPI, action_id: Optional[str]) -> None:
@@ -149,14 +177,33 @@ def create_app(
     # unless it carries a matching x-agentledger-ingest-key — closing the open relay.
     # When unset the proxy forwards anything (zero-config dev UX); __main__ warns loudly.
     _ingest_key = os.environ.get("AGENTLEDGER_INGEST_KEY")
+    # Read/management endpoints enforce auth only when a master key is configured.
+    # The master key grants admin (and is the bootstrap for minting tokens); API
+    # tokens grant their own role. When unset, access is open (dev UX) and __main__ warns.
+    _auth_enabled = bool(_api_key)
 
-    def _check_auth(request: Request) -> None:
-        if not _api_key:
-            return
-        supplied = request.headers.get("x-agentledger-api-key") or request.query_params.get("api_key")
-        # Constant-time compare so the key can't be recovered via a timing oracle.
-        if not supplied or not hmac.compare_digest(supplied, _api_key):
+    async def _authenticate(carrier) -> Optional[Principal]:
+        """Resolve a Principal from a request/websocket, or None if no valid credential."""
+        supplied_key = carrier.headers.get("x-agentledger-api-key") or carrier.query_params.get("api_key")
+        if _api_key and supplied_key and hmac.compare_digest(supplied_key, _api_key):
+            return Principal(ROLE_ADMIN, "master")
+        raw = _extract_token(carrier)
+        if raw:
+            row = await carrier.app.state.store.get_token_by_hash(hash_token(raw))
+            if row and _token_is_valid(row):
+                return Principal(row["role"], "token", row.get("token_id"), row.get("name"))
+        return None
+
+    async def _require(request: Request, role: str) -> Principal:
+        """Enforce that the request carries a credential satisfying ``role``."""
+        if not _auth_enabled:
+            return Principal(ROLE_ADMIN, "open")
+        principal = await _authenticate(request)
+        if principal is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
+        if not role_satisfies(principal.role, role):
+            raise HTTPException(status_code=403, detail=f"Forbidden: requires '{role}' role")
+        return principal
 
     # ── Health ───────────────────────────────────────────────────────────────
 
@@ -193,7 +240,7 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request) -> HTMLResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         return HTMLResponse(get_dashboard_html())
 
     # ── WebSocket (live events) ───────────────────────────────────────────────
@@ -211,21 +258,64 @@ def create_app(
 
     @app.get("/api/sessions")
     async def api_sessions(request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         sessions = await request.app.state.store.list_sessions()
         return JSONResponse(sessions)
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_EDITOR)
         deleted = await request.app.state.store.delete_session(session_id)
         if deleted == 0:
             raise HTTPException(status_code=404, detail="session_id not found")
         return JSONResponse({"deleted": deleted})
 
+    # ── API token management (admin only) ─────────────────────────────────────
+
+    @app.post("/api/tokens")
+    async def create_api_token(request: Request) -> JSONResponse:
+        await _require(request, ROLE_ADMIN)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        name = (body.get("name") or "").strip()
+        role = (body.get("role") or ROLE_VIEWER).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        if not valid_role(role):
+            raise HTTPException(status_code=400, detail=f"invalid role: {role!r} (viewer|editor|admin)")
+        expires_in_days = body.get("expires_in_days")
+        created_at = time.time()
+        expires_at = created_at + float(expires_in_days) * 86400 if expires_in_days else None
+        raw, token_hash = generate_token()
+        token_id = str(uuid.uuid4())
+        await request.app.state.store.create_token(
+            token_id, name, token_hash, role, created_at, expires_at
+        )
+        # The raw token is returned exactly once; only its hash is stored.
+        return JSONResponse({
+            "token_id": token_id, "name": name, "role": role,
+            "token": raw, "expires_at": expires_at,
+            "note": "Store this token now — it is shown only once.",
+        }, status_code=201)
+
+    @app.get("/api/tokens")
+    async def list_api_tokens(request: Request) -> JSONResponse:
+        await _require(request, ROLE_ADMIN)
+        return JSONResponse(await request.app.state.store.list_tokens())
+
+    @app.delete("/api/tokens/{token_id}")
+    async def revoke_api_token(token_id: str, request: Request) -> JSONResponse:
+        await _require(request, ROLE_ADMIN)
+        revoked = await request.app.state.store.revoke_token(token_id, time.time())
+        if not revoked:
+            raise HTTPException(status_code=404, detail="token_id not found or already revoked")
+        return JSONResponse({"revoked": True})
+
     @app.get("/api/search")
     async def api_search(request: Request, q: str = "") -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         if not q.strip():
             return JSONResponse([])
         results = await request.app.state.store.search(q.strip())
@@ -233,7 +323,7 @@ def create_app(
 
     @app.get("/explain/{action_id}")
     async def explain(action_id: str, request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         record = await request.app.state.store.get(action_id)
         if record is None:
             raise HTTPException(status_code=404, detail="action_id not found")
@@ -241,7 +331,7 @@ def create_app(
 
     @app.get("/session/{session_id}")
     async def session(session_id: str, request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         records = await request.app.state.store.get_session(session_id)
         if not records:
             raise HTTPException(status_code=404, detail="session_id not found")
@@ -251,7 +341,7 @@ def create_app(
 
     @app.get("/export/{session_id}")
     async def export_json(session_id: str, request: Request) -> Response:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         calls = await request.app.state.store.get_session(session_id)
         if not calls:
             raise HTTPException(status_code=404, detail="session_id not found")
@@ -265,7 +355,7 @@ def create_app(
 
     @app.get("/export/{session_id}/report")
     async def export_report(session_id: str, request: Request) -> HTMLResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         calls = await request.app.state.store.get_session(session_id)
         if not calls:
             raise HTTPException(status_code=404, detail="session_id not found")
@@ -276,7 +366,7 @@ def create_app(
 
     @app.post("/mcp")
     async def mcp(request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         return await handle_mcp(request)
 
     # ── Transparent proxy ────────────────────────────────────────────────────

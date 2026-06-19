@@ -53,7 +53,7 @@ async def pg_store():
     import asyncpg
 
     conn = await asyncpg.connect(PG_DSN)
-    await conn.execute("DROP TABLE IF EXISTS llm_calls")
+    await conn.execute("DROP TABLE IF EXISTS llm_calls, api_tokens")
     await conn.close()
 
     store = await Store.connect(PG_DSN)
@@ -107,6 +107,25 @@ async def test_session_cost_and_delete_with_non_uuid_id(pg_store):
 async def test_ping_succeeds(pg_store):
     """The Postgres readiness ping runs a trivial query without raising."""
     await pg_store.ping()
+
+
+async def test_token_crud(pg_store):
+    """API token create/get/list/revoke round-trips on Postgres."""
+    from agentledger.proxy.auth import generate_token
+
+    raw, token_hash = generate_token()
+    await pg_store.create_token("pt1", "ci", token_hash, "editor", time.time(), None)
+
+    row = await pg_store.get_token_by_hash(token_hash)
+    assert row["token_id"] == "pt1" and row["role"] == "editor" and row["revoked_at"] is None
+
+    listed = await pg_store.list_tokens()
+    assert [t["token_id"] for t in listed] == ["pt1"]
+    assert "token_hash" not in listed[0]
+
+    assert await pg_store.revoke_token("pt1", time.time()) == 1
+    assert (await pg_store.get_token_by_hash(token_hash))["revoked_at"] is not None
+    assert await pg_store.revoke_token("pt1", time.time()) == 0
 
 
 async def test_list_sessions_aggregates_non_uuid_ids(pg_store):

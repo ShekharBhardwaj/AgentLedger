@@ -251,7 +251,9 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` (Docker: `sqlite:////data/agentledger.db`) | Database. SQLite for local dev, Postgres URL for production. |
 | `AGENTLEDGER_HOST` | No | `0.0.0.0` | Host to bind to. Use `127.0.0.1` to restrict to localhost only. |
 | `AGENTLEDGER_PORT` | No | `8000` | Port to run on. |
-| `AGENTLEDGER_API_KEY` | No | _(none)_ | Protects the dashboard and all read endpoints. Skip for local dev. Set when the proxy is on a server — you choose the value. |
+| `AGENTLEDGER_API_KEY` | No | _(none)_ | Master admin key. When set, the dashboard, read, and management endpoints require authentication; the key grants the `admin` role and bootstraps API tokens (below). Skip for local dev; set when the proxy is on a server — you choose the value. |
+| `AGENTLEDGER_INGEST_KEY` | No | _(none)_ | When set, the proxy forwards a request only if it carries a matching `x-agentledger-ingest-key` header — closing the open relay. Off by default; a loud startup warning fires when unset. |
+| `AGENTLEDGER_EXPORT_HMAC_KEY` | No | _(none)_ | When set, compliance exports carry a tamper-evident keyed `hmac-sha256` integrity tag instead of a plain `sha256` checksum. |
 | `AGENTLEDGER_EXTRA_PATHS` | No | _(none)_ | Comma-separated additional request paths to capture, e.g. `v1/responses,v1/custom`. Built-in paths (`v1/chat/completions`, `v1/messages`, `v1/responses`) are always captured. |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
@@ -333,6 +335,36 @@ curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/session/run-1
 # Query param (browser)
 http://localhost:8000?api_key=my-secret
 ```
+
+#### Scoped API tokens (RBAC)
+
+The master key is convenient but coarse. For team access, mint **scoped, revocable tokens** with roles instead of sharing the master secret. Tokens are random secrets shown once at creation; only their SHA-256 hash is stored.
+
+Roles are hierarchical:
+
+| Role | Can |
+|---|---|
+| `viewer` | read captured data — dashboard, API, export, MCP |
+| `editor` | viewer + delete sessions |
+| `admin` | editor + manage API tokens |
+
+```bash
+# Mint a viewer token (admin only — use the master key to bootstrap)
+curl -X POST http://localhost:8000/api/tokens \
+  -H "x-agentledger-api-key: my-secret" \
+  -H "content-type: application/json" \
+  -d '{"name": "grafana-readonly", "role": "viewer", "expires_in_days": 90}'
+# → {"token_id": "...", "token": "agl_…", "role": "viewer", ...}  (token shown once)
+
+# Use it (Bearer header, x-agentledger-token, or ?token=)
+curl -H "Authorization: Bearer agl_…" http://localhost:8000/api/sessions
+
+# List and revoke
+curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/api/tokens
+curl -X DELETE -H "x-agentledger-api-key: my-secret" http://localhost:8000/api/tokens/<token_id>
+```
+
+> Auth is enforced only when `AGENTLEDGER_API_KEY` is set; the master key is the admin bootstrap for minting tokens. (Dashboard credential propagation over the live `/ws` feed is tracked as follow-up — see `ROADMAP.md`.)
 
 ---
 

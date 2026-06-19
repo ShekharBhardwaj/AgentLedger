@@ -96,6 +96,29 @@ class Store(ABC):
         """Raise if the backend is not reachable. Used by the readiness probe."""
         ...
 
+    # ── API tokens (timestamps are unix seconds) ─────────────────────────────
+
+    @abstractmethod
+    async def create_token(
+        self, token_id: str, name: str, token_hash: str, role: str,
+        created_at: float, expires_at: Optional[float],
+    ) -> None: ...
+
+    @abstractmethod
+    async def get_token_by_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
+        """Return the token row for a hash, or None. Includes revoked_at/expires_at."""
+        ...
+
+    @abstractmethod
+    async def list_tokens(self) -> list[dict[str, Any]]:
+        """List tokens (metadata only — never the hash), newest first."""
+        ...
+
+    @abstractmethod
+    async def revoke_token(self, token_id: str, revoked_at: float) -> int:
+        """Mark a token revoked. Returns the number of rows updated (0 if unknown)."""
+        ...
+
     @abstractmethod
     async def close(self) -> None: ...
 
@@ -138,6 +161,17 @@ class _SqliteStore(Store):
             # Column already exists on an upgraded DB — that's fine, skip it.
             with contextlib.suppress(Exception):
                 await db.execute(f"ALTER TABLE llm_calls ADD COLUMN {col} {col_type}")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                token_id   TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                role       TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL,
+                revoked_at REAL
+            )
+        """)
         await db.commit()
         return cls(db)
 
@@ -263,6 +297,38 @@ class _SqliteStore(Store):
     async def ping(self) -> None:
         await self._db.execute("SELECT 1")
 
+    async def create_token(self, token_id, name, token_hash, role, created_at, expires_at) -> None:
+        await self._db.execute(
+            "INSERT INTO api_tokens (token_id, name, token_hash, role, created_at, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (token_id, name, token_hash, role, created_at, expires_at),
+        )
+        await self._db.commit()
+
+    async def get_token_by_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
+        async with self._db.execute(
+            "SELECT * FROM api_tokens WHERE token_hash = ?", (token_hash,)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_tokens(self) -> list[dict[str, Any]]:
+        async with self._db.execute(
+            "SELECT token_id, name, role, created_at, expires_at, revoked_at "
+            "FROM api_tokens ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def revoke_token(self, token_id: str, revoked_at: float) -> int:
+        async with self._db.execute(
+            "UPDATE api_tokens SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL",
+            (revoked_at, token_id),
+        ) as cur:
+            updated = cur.rowcount
+        await self._db.commit()
+        return updated
+
     async def close(self) -> None:
         await self._db.close()
 
@@ -340,6 +406,17 @@ class _PostgresStore(Store):
                     "ALTER TABLE llm_calls ALTER COLUMN session_id TYPE TEXT "
                     "USING session_id::text"
                 )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    token_id   TEXT PRIMARY KEY,
+                    name       TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    role       TEXT NOT NULL,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    expires_at DOUBLE PRECISION,
+                    revoked_at DOUBLE PRECISION
+                )
+            """)
         return cls(pool)
 
     async def save(self, action_id, req, resp, *, session_id=None, user_id=None,
@@ -474,6 +551,37 @@ class _PostgresStore(Store):
     async def ping(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
+
+    async def create_token(self, token_id, name, token_hash, role, created_at, expires_at) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO api_tokens (token_id, name, token_hash, role, created_at, expires_at) "
+                "VALUES ($1,$2,$3,$4,$5,$6)",
+                token_id, name, token_hash, role, created_at, expires_at,
+            )
+
+    async def get_token_by_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM api_tokens WHERE token_hash = $1", token_hash
+            )
+        return dict(row) if row else None
+
+    async def list_tokens(self) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT token_id, name, role, created_at, expires_at, revoked_at "
+                "FROM api_tokens ORDER BY created_at DESC"
+            )
+        return [dict(r) for r in rows]
+
+    async def revoke_token(self, token_id: str, revoked_at: float) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE api_tokens SET revoked_at = $1 WHERE token_id = $2 AND revoked_at IS NULL",
+                revoked_at, token_id,
+            )
+        return int(result.split()[-1])  # "UPDATE N"
 
     async def close(self) -> None:
         await self._pool.close()

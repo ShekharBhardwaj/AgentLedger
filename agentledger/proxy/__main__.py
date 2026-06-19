@@ -8,9 +8,12 @@ Reads config from environment variables:
     AGENTLEDGER_DSN                   Database URL (default: sqlite:///agentledger.db)
     AGENTLEDGER_HOST                  Bind host (default: 0.0.0.0)
     AGENTLEDGER_PORT                  Bind port (default: 8000)
-    AGENTLEDGER_API_KEY               Protect dashboard/API endpoints (default: none)
+    AGENTLEDGER_API_KEY               Master admin key; protects dashboard/API/management
+                                      endpoints and bootstraps scoped API tokens (default: none)
     AGENTLEDGER_INGEST_KEY            Require x-agentledger-ingest-key on the proxy path,
                                       closing the open relay (default: none — open)
+    AGENTLEDGER_EXPORT_HMAC_KEY       Sign compliance exports with a tamper-evident keyed
+                                      hmac-sha256 tag instead of a sha256 checksum (default: none)
     AGENTLEDGER_EXTRA_PATHS           Extra comma-separated paths to capture (default: none)
 
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
