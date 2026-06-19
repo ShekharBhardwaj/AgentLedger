@@ -31,6 +31,13 @@ pip-wheel-metadata/
 .coverage
 .coverage.*
 htmlcov/
+coverage.xml
+
+# Runtime database artifacts (never commit captured LLM traffic)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
 
 # Jupyter
 .ipynb_checkpoints/
