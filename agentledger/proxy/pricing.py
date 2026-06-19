@@ -94,12 +94,24 @@ def compute_cost(
     tokens_in: Optional[int],
     tokens_out: Optional[int],
 ) -> Optional[float]:
-    """Return estimated cost in USD, or None if model is not in the pricing table."""
+    """Return estimated cost in USD, or None if model is not in the pricing table.
+
+    Matches the model id against the pricing table by substring, preferring the
+    LONGEST (most specific) matching pattern. This ensures a model like
+    "gpt-4o-mini" is priced at its own rate rather than the more general
+    "gpt-4o" rate that is also a substring of its id.
+    """
     if tokens_in is None and tokens_out is None:
         return None
     model_lower = model_id.lower()
-    for pattern, (in_price, out_price) in _PRICES.items():
-        if pattern in model_lower:
-            cost = ((tokens_in or 0) * in_price + (tokens_out or 0) * out_price) / 1_000_000
-            return round(cost, 8)
-    return None
+    best_match: Optional[tuple[float, float]] = None
+    best_len = -1
+    for pattern, prices in _PRICES.items():
+        if pattern in model_lower and len(pattern) > best_len:
+            best_match = prices
+            best_len = len(pattern)
+    if best_match is None:
+        return None
+    in_price, out_price = best_match
+    cost = ((tokens_in or 0) * in_price + (tokens_out or 0) * out_price) / 1_000_000
+    return round(cost, 8)
