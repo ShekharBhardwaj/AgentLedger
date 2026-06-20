@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a problem with AgentLedger
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please don't include real prompts, API keys, or
+        other sensitive captured data in this report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I send a streaming request through the proxy, ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps (and a minimal request/config) to reproduce.
+      placeholder: |
+        1. Start the proxy with `...`
+        2. Send `...`
+        3. Observe `...`
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: AgentLedger version
+      description: Output of `pip show agentic-ledger` or the Docker image tag.
+      placeholder: "0.x.y / ghcr.io/...:latest"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Storage backend
+      options:
+        - SQLite
+        - Postgres
+    validations:
+      required: true
+  - type: input
+    id: upstream
+    attributes:
+      label: Upstream provider / gateway
+      description: e.g. OpenAI, Anthropic, LiteLLM, Bedrock-via-gateway.
+      placeholder: OpenAI
+  - type: input
+    id: python
+    attributes:
+      label: Python version / OS
+      placeholder: "3.12 on Ubuntu 24.04 (or Docker)"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Proxy logs or tracebacks. Redact secrets and prompt content.
+      render: shell

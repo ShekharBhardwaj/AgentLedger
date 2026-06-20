@@ -12,7 +12,7 @@ Never store provider-native formats as source of truth.
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 from .pricing import compute_cost
 

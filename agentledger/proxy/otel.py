@@ -48,10 +48,10 @@ def init_otel(
 
     try:
         from opentelemetry import trace
-        from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     except ImportError:
         logger.error(
             "OpenTelemetry packages missing. "
@@ -97,9 +97,10 @@ def emit_span(
         return
 
     try:
-        from opentelemetry import trace, context as otel_context
-        from opentelemetry.trace import SpanContext, TraceFlags, NonRecordingSpan, StatusCode
-        import datetime
+
+        from opentelemetry import context as otel_context
+        from opentelemetry import trace
+        from opentelemetry.trace import NonRecordingSpan, SpanContext, StatusCode, TraceFlags
 
         # ── Determine trace_id (one trace per session) ────────────────────────
         if session_id:

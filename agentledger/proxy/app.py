@@ -31,30 +31,49 @@ Or via CLI:
     python -m agentledger.proxy
 """
 
+import asyncio
 import datetime
+import hmac
 import json
 import logging
 import os
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import AsyncIterator, Optional
-
-logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .dashboard import get_dashboard_html
 from .alerts import AlertConfig, check_and_fire
-from .otel import emit_span
-from .ratelimit import RateLimitConfig, RateLimiter
+from .auth import (
+    ROLE_ADMIN,
+    ROLE_EDITOR,
+    ROLE_VIEWER,
+    Principal,
+    generate_token,
+    hash_token,
+    role_satisfies,
+    valid_role,
+)
+from .dashboard import get_dashboard_html
 from .export import build_export, render_html_report
 from .mcp import handle_mcp
-from .normalize import CanonicalRequest, CanonicalResponse, normalize_request, normalize_response
+from .normalize import (
+    CanonicalRequest,
+    CanonicalResponse,
+    normalize_request,
+    normalize_response,
+)
+from .otel import emit_span
+from .ratelimit import RateLimitConfig, RateLimiter
+from .redact import Redactor, apply_capture_policy, normalize_capture_level
 from .store import Store
 from .stream import reconstruct_from_sse
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_LLM_PATHS = {"v1/chat/completions", "v1/messages", "v1/responses"}
 _extra = os.getenv("AGENTLEDGER_EXTRA_PATHS", "")
@@ -69,7 +88,51 @@ _AL_HEADERS = {
     "x-agentledger-environment",
     "x-agentledger-handoff-from",
     "x-agentledger-handoff-to",
+    "x-agentledger-ingest-key",
+    "x-agentledger-api-key",
 }
+
+
+@dataclass
+class _CaptureJob:
+    """The post-call work for one captured request — persisted inline (sync mode)
+    or off the hot path by the background worker (async mode)."""
+    action_id: str
+    req: CanonicalRequest
+    resp: CanonicalResponse
+    status_code: int
+    error_detail: Optional[str]
+    meta: dict
+    budget_warning: Optional[str]
+
+
+def _extract_token(carrier) -> Optional[str]:
+    """Pull an API token from a request/websocket: Bearer header, x-agentledger-token, or ?token."""
+    authz = carrier.headers.get("authorization") or ""
+    if authz.lower().startswith("bearer "):
+        return authz[7:].strip() or None
+    return carrier.headers.get("x-agentledger-token") or carrier.query_params.get("token")
+
+
+def _token_is_valid(row: dict) -> bool:
+    """A token row is usable if it is not revoked, not expired, and has a known role."""
+    if row.get("revoked_at"):
+        return False
+    expires_at = row.get("expires_at")
+    if expires_at is not None and expires_at <= time.time():
+        return False
+    return valid_role(row.get("role", ""))
+
+
+def _record_capture_drop(app: FastAPI, action_id: Optional[str]) -> None:
+    """A call was served to the agent but could not be recorded. Never re-raise —
+    observability must not break the proxy — but make the loss visible."""
+    with suppress(Exception):
+        app.state.capture_dropped += 1
+    logger.warning(
+        "Capture failed for action_id=%s — call was served upstream but not recorded",
+        action_id, exc_info=True,
+    )
 
 
 class _Broadcaster:
@@ -104,6 +167,13 @@ def create_app(
     budget_action: str = "block",   # "block" | "warn" | "both"
     alert_config: Optional[AlertConfig] = None,
     rate_limit_config: Optional[RateLimitConfig] = None,
+    async_capture: bool = False,
+    capture_queue_max: int = 10_000,
+    capture_level: str = "full",
+    redactor: Optional[Redactor] = None,
+    retention_days: Optional[float] = None,
+    retention_interval_seconds: float = 3600.0,
+    audit_enabled: bool = True,
 ) -> FastAPI:
 
     broadcaster = _Broadcaster()
@@ -112,6 +182,20 @@ def create_app(
         webhook_url=None, cost_per_call=None,
         latency_ms=None, error_rate=None, daily_spend=None,
     )
+    # When async_capture is on, post-call persistence runs on a background worker so
+    # it never adds latency to the agent's call — at the cost of read-after-write
+    # (a just-captured call may not be queryable for a brief moment). Default off.
+    _async_capture = async_capture
+    _capture_queue: asyncio.Queue = asyncio.Queue(maxsize=capture_queue_max)
+    # Data governance: capture level + optional redaction, applied to the stored copy
+    # only (never to the response returned to the agent).
+    _capture_level = normalize_capture_level(capture_level)
+    _redactor = redactor
+    # Retention: when set, a background worker periodically deletes calls older than
+    # this many days. None = keep forever.
+    _retention_days = retention_days
+    _retention_interval = retention_interval_seconds
+    _audit_enabled = audit_enabled
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -121,25 +205,158 @@ def create_app(
             timeout=httpx.Timeout(120.0),
         )
         app.state.broadcaster = broadcaster
+        worker: Optional[asyncio.Task] = None
+        if _async_capture:
+            worker = asyncio.create_task(_capture_worker(app))
+        retention_task: Optional[asyncio.Task] = None
+        if _retention_days is not None:
+            retention_task = asyncio.create_task(_retention_worker(app))
         yield
+        if retention_task is not None:
+            retention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retention_task
+        if worker is not None:
+            # Flush pending captures, then stop the worker, before closing the store.
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(_capture_queue.join(), timeout=10.0)
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
         await app.state.store.close()
         await app.state.client.aclose()
 
     app = FastAPI(title="AgentLedger Proxy", lifespan=lifespan)
+    # Count calls whose capture failed (served to the agent but not recorded), so
+    # silent data loss is observable instead of invisible. Surfaced via /readyz.
+    app.state.capture_dropped = 0
+    app.state.capture_persisted = 0
+
+    async def _persist(job: _CaptureJob) -> None:
+        """Do the post-call work for a captured request. The store write is the
+        critical part (and counts the capture); span/broadcast/alerts are best-effort."""
+        # Apply governance here so every sink (store, OTel span, dashboard) sees the
+        # redacted/leveled copy. In async mode this runs off the request hot path.
+        apply_capture_policy(job.req, job.resp, _capture_level, _redactor)
+        store = app.state.store
+        await store.save(
+            job.action_id, job.req, job.resp,
+            status_code=job.status_code, error_detail=job.error_detail, **job.meta,
+        )
+        app.state.capture_persisted += 1
+        with suppress(Exception):
+            emit_span(job.action_id, job.req, job.resp, status_code=job.status_code, **job.meta)
+        with suppress(Exception):
+            await broadcaster.broadcast({
+                "type": "call",
+                "action_id": job.action_id,
+                "session_id": job.meta.get("session_id"),
+                "status_code": job.status_code,
+                "budget_warning": bool(job.budget_warning),
+            })
+        with suppress(Exception):
+            await check_and_fire(
+                _alert_config, store, job.resp, job.action_id,
+                job.meta.get("session_id"), job.meta.get("agent_name"), job.status_code,
+            )
+
+    async def _capture_worker(app: FastAPI) -> None:
+        """Drain the capture queue, persisting each job off the request hot path."""
+        while True:
+            job = await _capture_queue.get()
+            try:
+                await _persist(job)
+            except Exception:
+                _record_capture_drop(app, job.action_id)
+            finally:
+                _capture_queue.task_done()
+
+    async def _retention_worker(app: FastAPI) -> None:
+        """Periodically delete captured calls older than the retention window."""
+        while True:
+            try:
+                cutoff = time.time() - _retention_days * 86400
+                deleted = await app.state.store.purge_older_than(cutoff)
+                if deleted:
+                    logger.info(
+                        "Retention: purged %d calls older than %s days", deleted, _retention_days
+                    )
+            except Exception:
+                logger.warning("Retention purge failed", exc_info=True)
+            await asyncio.sleep(_retention_interval)
+
+    async def _capture(job: _CaptureJob) -> None:
+        """Persist a captured call — enqueued (async mode) or inline (sync mode)."""
+        if _async_capture:
+            try:
+                _capture_queue.put_nowait(job)
+            except asyncio.QueueFull:
+                # Shed load rather than block the agent's response; the drop is counted.
+                _record_capture_drop(app, job.action_id)
+        else:
+            try:
+                await _persist(job)
+            except Exception:
+                _record_capture_drop(app, job.action_id)
 
     _api_key = os.environ.get("AGENTLEDGER_API_KEY")
+    # Optional proxy-ingest key. When set, the proxy refuses to forward a request
+    # unless it carries a matching x-agentledger-ingest-key — closing the open relay.
+    # When unset the proxy forwards anything (zero-config dev UX); __main__ warns loudly.
+    _ingest_key = os.environ.get("AGENTLEDGER_INGEST_KEY")
+    # Read/management endpoints enforce auth only when a master key is configured.
+    # The master key grants admin (and is the bootstrap for minting tokens); API
+    # tokens grant their own role. When unset, access is open (dev UX) and __main__ warns.
+    _auth_enabled = bool(_api_key)
 
-    def _check_auth(request: Request) -> None:
-        if not _api_key:
-            return
-        supplied = request.headers.get("x-agentledger-api-key") or request.query_params.get("api_key")
-        if supplied != _api_key:
+    async def _authenticate(carrier) -> Optional[Principal]:
+        """Resolve a Principal from a request/websocket, or None if no valid credential."""
+        supplied_key = carrier.headers.get("x-agentledger-api-key") or carrier.query_params.get("api_key")
+        if _api_key and supplied_key and hmac.compare_digest(supplied_key, _api_key):
+            return Principal(ROLE_ADMIN, "master")
+        raw = _extract_token(carrier)
+        if raw:
+            row = await carrier.app.state.store.get_token_by_hash(hash_token(raw))
+            if row and _token_is_valid(row):
+                return Principal(row["role"], "token", row.get("token_id"), row.get("name"))
+        return None
+
+    async def _require(request: Request, role: str) -> Principal:
+        """Enforce that the request carries a credential satisfying ``role``."""
+        if not _auth_enabled:
+            return Principal(ROLE_ADMIN, "open")
+        principal = await _authenticate(request)
+        if principal is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
+        if not role_satisfies(principal.role, role):
+            raise HTTPException(status_code=403, detail=f"Forbidden: requires '{role}' role")
+        return principal
+
+    async def _audit(
+        principal: Optional[Principal], request: Request,
+        action: str, target: Optional[str] = None, details: Optional[str] = None,
+    ) -> None:
+        """Record a sensitive access/mutation. Best-effort — never breaks the request."""
+        if not _audit_enabled:
+            return
+        with suppress(Exception):
+            await app.state.store.add_audit({
+                "id": str(uuid.uuid4()),
+                "timestamp": time.time(),
+                "actor_role": principal.role if principal else None,
+                "actor_source": principal.source if principal else "open",
+                "actor": (principal.name or principal.token_id) if principal else None,
+                "action": action,
+                "target": target,
+                "details": details,
+                "client": request.client.host if request.client else None,
+            })
 
     # ── Health ───────────────────────────────────────────────────────────────
 
     @app.get("/health")
     async def health() -> JSONResponse:
+        """Liveness — the process is up. Always 200; does not touch the store."""
         try:
             from importlib.metadata import version as _v
             _version = _v("agentic-ledger")
@@ -147,11 +364,52 @@ def create_app(
             _version = "unknown"
         return JSONResponse({"status": "ok", "version": _version})
 
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        """Readiness — the store is reachable. 503 when it isn't, so load balancers
+        and k8s can stop routing traffic. Also surfaces the dropped-capture count."""
+        store = getattr(app.state, "store", None)
+        db_ok = False
+        if store is not None:
+            try:
+                await store.ping()
+                db_ok = True
+            except Exception:
+                logger.warning("Readiness check: store ping failed", exc_info=True)
+        body = {
+            "status": "ok" if db_ok else "unavailable",
+            "store": "ok" if db_ok else "error",
+            "capture_dropped": getattr(app.state, "capture_dropped", 0),
+        }
+        return JSONResponse(body, status_code=200 if db_ok else 503)
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        """Prometheus text-format metrics (low-cardinality; no per-session labels)."""
+        persisted = getattr(app.state, "capture_persisted", 0)
+        dropped = getattr(app.state, "capture_dropped", 0)
+        depth = _capture_queue.qsize() if _async_capture else 0
+        lines = [
+            "# HELP agentledger_captures_persisted_total Calls successfully recorded to the store.",
+            "# TYPE agentledger_captures_persisted_total counter",
+            f"agentledger_captures_persisted_total {persisted}",
+            "# HELP agentledger_captures_dropped_total Calls served but not recorded (error or queue overflow).",
+            "# TYPE agentledger_captures_dropped_total counter",
+            f"agentledger_captures_dropped_total {dropped}",
+            "# HELP agentledger_capture_queue_depth Capture jobs awaiting persistence (async mode).",
+            "# TYPE agentledger_capture_queue_depth gauge",
+            f"agentledger_capture_queue_depth {depth}",
+            "# HELP agentledger_capture_async Whether async capture is enabled (1) or not (0).",
+            "# TYPE agentledger_capture_async gauge",
+            f"agentledger_capture_async {1 if _async_capture else 0}",
+        ]
+        return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
     # ── Dashboard ────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request) -> HTMLResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         return HTMLResponse(get_dashboard_html())
 
     # ── WebSocket (live events) ───────────────────────────────────────────────
@@ -169,50 +427,114 @@ def create_app(
 
     @app.get("/api/sessions")
     async def api_sessions(request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         sessions = await request.app.state.store.list_sessions()
         return JSONResponse(sessions)
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request) -> JSONResponse:
-        _check_auth(request)
+        principal = await _require(request, ROLE_EDITOR)
         deleted = await request.app.state.store.delete_session(session_id)
         if deleted == 0:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "delete_session", session_id, f"deleted {deleted} calls")
         return JSONResponse({"deleted": deleted})
+
+    @app.delete("/api/users/{user_id}")
+    async def erase_user(user_id: str, request: Request) -> JSONResponse:
+        """Right-to-erasure: delete all captured calls for a user_id."""
+        principal = await _require(request, ROLE_ADMIN)
+        deleted = await request.app.state.store.delete_user(user_id)
+        await _audit(principal, request, "erase_user", user_id, f"deleted {deleted} calls")
+        return JSONResponse({"deleted": deleted})
+
+    @app.get("/api/audit")
+    async def get_audit(request: Request, limit: int = 100) -> JSONResponse:
+        await _require(request, ROLE_ADMIN)
+        entries = await request.app.state.store.list_audit(limit=max(1, min(limit, 1000)))
+        return JSONResponse(entries)
+
+    # ── API token management (admin only) ─────────────────────────────────────
+
+    @app.post("/api/tokens")
+    async def create_api_token(request: Request) -> JSONResponse:
+        principal = await _require(request, ROLE_ADMIN)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        name = (body.get("name") or "").strip()
+        role = (body.get("role") or ROLE_VIEWER).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        if not valid_role(role):
+            raise HTTPException(status_code=400, detail=f"invalid role: {role!r} (viewer|editor|admin)")
+        expires_in_days = body.get("expires_in_days")
+        created_at = time.time()
+        expires_at = created_at + float(expires_in_days) * 86400 if expires_in_days else None
+        raw, token_hash = generate_token()
+        token_id = str(uuid.uuid4())
+        await request.app.state.store.create_token(
+            token_id, name, token_hash, role, created_at, expires_at
+        )
+        await _audit(principal, request, "create_token", token_id, f"role={role} name={name}")
+        # The raw token is returned exactly once; only its hash is stored.
+        return JSONResponse({
+            "token_id": token_id, "name": name, "role": role,
+            "token": raw, "expires_at": expires_at,
+            "note": "Store this token now — it is shown only once.",
+        }, status_code=201)
+
+    @app.get("/api/tokens")
+    async def list_api_tokens(request: Request) -> JSONResponse:
+        await _require(request, ROLE_ADMIN)
+        return JSONResponse(await request.app.state.store.list_tokens())
+
+    @app.delete("/api/tokens/{token_id}")
+    async def revoke_api_token(token_id: str, request: Request) -> JSONResponse:
+        principal = await _require(request, ROLE_ADMIN)
+        revoked = await request.app.state.store.revoke_token(token_id, time.time())
+        if not revoked:
+            raise HTTPException(status_code=404, detail="token_id not found or already revoked")
+        await _audit(principal, request, "revoke_token", token_id)
+        return JSONResponse({"revoked": True})
 
     @app.get("/api/search")
     async def api_search(request: Request, q: str = "") -> JSONResponse:
-        _check_auth(request)
+        principal = await _require(request, ROLE_VIEWER)
         if not q.strip():
             return JSONResponse([])
         results = await request.app.state.store.search(q.strip())
+        await _audit(principal, request, "search", q.strip()[:200])
         return JSONResponse(results)
 
     @app.get("/explain/{action_id}")
     async def explain(action_id: str, request: Request) -> JSONResponse:
-        _check_auth(request)
+        principal = await _require(request, ROLE_VIEWER)
         record = await request.app.state.store.get(action_id)
         if record is None:
             raise HTTPException(status_code=404, detail="action_id not found")
+        await _audit(principal, request, "explain", action_id)
         return JSONResponse(record)
 
     @app.get("/session/{session_id}")
     async def session(session_id: str, request: Request) -> JSONResponse:
-        _check_auth(request)
+        principal = await _require(request, ROLE_VIEWER)
         records = await request.app.state.store.get_session(session_id)
         if not records:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "view_session", session_id)
         return JSONResponse(records)
 
     # ── Compliance export ─────────────────────────────────────────────────────
 
     @app.get("/export/{session_id}")
     async def export_json(session_id: str, request: Request) -> Response:
-        _check_auth(request)
+        principal = await _require(request, ROLE_VIEWER)
         calls = await request.app.state.store.get_session(session_id)
         if not calls:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "export_session", session_id)
         export = build_export(session_id, calls)
         filename = f"agentledger-{session_id[:16]}.json"
         return Response(
@@ -223,10 +545,11 @@ def create_app(
 
     @app.get("/export/{session_id}/report")
     async def export_report(session_id: str, request: Request) -> HTMLResponse:
-        _check_auth(request)
+        principal = await _require(request, ROLE_VIEWER)
         calls = await request.app.state.store.get_session(session_id)
         if not calls:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "export_report", session_id)
         export = build_export(session_id, calls)
         return HTMLResponse(render_html_report(export))
 
@@ -234,13 +557,25 @@ def create_app(
 
     @app.post("/mcp")
     async def mcp(request: Request) -> JSONResponse:
-        _check_auth(request)
+        await _require(request, ROLE_VIEWER)
         return await handle_mcp(request)
 
     # ── Transparent proxy ────────────────────────────────────────────────────
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def proxy(request: Request, path: str) -> Response:
+        # Proxy-ingest auth: gate forwarding behind a dedicated key when configured.
+        if _ingest_key:
+            supplied = request.headers.get("x-agentledger-ingest-key")
+            if not supplied or not hmac.compare_digest(supplied, _ingest_key):
+                return JSONResponse(
+                    {"error": {
+                        "type": "unauthorized",
+                        "message": "Missing or invalid x-agentledger-ingest-key.",
+                    }},
+                    status_code=401,
+                )
+
         body_bytes = await request.body()
 
         is_llm_path = request.method == "POST" and path in _LLM_PATHS and body_bytes
@@ -286,8 +621,10 @@ def create_app(
                     # Save blocked call with empty response, then reject
                     try:
                         canonical_req = normalize_request(json.loads(body_bytes), path)
+                        blocked_resp = _empty_response(0)
+                        apply_capture_policy(canonical_req, blocked_resp, _capture_level, _redactor)
                         await request.app.state.store.save(
-                            action_id, canonical_req, _empty_response(0),
+                            action_id, canonical_req, blocked_resp,
                             status_code=429, error_detail=budget_error, **meta,
                         )
                         await broadcaster.broadcast({
@@ -298,7 +635,7 @@ def create_app(
                             "budget_warning": False,
                         })
                     except Exception:
-                        pass
+                        _record_capture_drop(request.app, action_id)
                     return JSONResponse(
                         {"error": {"type": "budget_exceeded", "message": budget_error}},
                         status_code=429,
@@ -328,7 +665,7 @@ def create_app(
         if is_streaming:
             return await _streaming_proxy(
                 request, path, body_bytes, forward_headers, action_id, meta,
-                broadcaster, _alert_config, _budget_warning,
+                _capture, _budget_warning,
             )
 
         start = time.monotonic()
@@ -354,28 +691,12 @@ def create_app(
                 else:
                     canonical_resp = _empty_response(latency_ms)
                     error_detail = _extract_error(upstream_resp)
-                await request.app.state.store.save(
+                await _capture(_CaptureJob(
                     action_id, canonical_req, canonical_resp,
-                    status_code=status_code, error_detail=error_detail, **meta,
-                )
-                emit_span(
-                    action_id, canonical_req, canonical_resp,
-                    status_code=status_code, **meta,
-                )
-                await broadcaster.broadcast({
-                    "type": "call",
-                    "action_id": action_id,
-                    "session_id": meta.get("session_id"),
-                    "status_code": status_code,
-                    "budget_warning": bool(_budget_warning),
-                })
-                await check_and_fire(
-                    _alert_config, request.app.state.store,
-                    canonical_resp, action_id,
-                    meta.get("session_id"), meta.get("agent_name"), status_code,
-                )
+                    status_code, error_detail, meta, _budget_warning,
+                ))
             except Exception:
-                pass
+                _record_capture_drop(request.app, action_id)
 
         return Response(
             content=upstream_resp.content,
@@ -394,12 +715,10 @@ async def _streaming_proxy(
     forward_headers: dict,
     action_id: str,
     meta: dict,
-    broadcaster: _Broadcaster,
-    alert_config: Optional[AlertConfig] = None,
+    capture,
     budget_warning: Optional[str] = None,
 ) -> StreamingResponse:
     client: httpx.AsyncClient = request.app.state.client
-    store: Store = request.app.state.store
 
     stream_ctx = client.stream(
         method=request.method,
@@ -435,28 +754,11 @@ async def _streaming_proxy(
                         b"".join(chunks), latency_ms, canonical_req.model_id
                     )
                     _err = f"budget_warning: {budget_warning}" if budget_warning else None
-                    await store.save(
-                        action_id, canonical_req, canonical_resp,
-                        status_code=200, error_detail=_err, **meta,
-                    )
-                    emit_span(
-                        action_id, canonical_req, canonical_resp,
-                        status_code=200, **meta,
-                    )
-                    await broadcaster.broadcast({
-                        "type": "call",
-                        "action_id": action_id,
-                        "session_id": meta.get("session_id"),
-                        "status_code": 200,
-                        "budget_warning": bool(budget_warning),
-                    })
-                    if alert_config:
-                        await check_and_fire(
-                            alert_config, store, canonical_resp, action_id,
-                            meta.get("session_id"), meta.get("agent_name"), 200,
-                        )
+                    await capture(_CaptureJob(
+                        action_id, canonical_req, canonical_resp, 200, _err, meta, budget_warning,
+                    ))
                 except Exception:
-                    pass
+                    _record_capture_drop(request.app, action_id)
         finally:
             await stream_ctx.__aexit__(None, None, None)
 

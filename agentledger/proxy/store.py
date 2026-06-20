@@ -10,6 +10,7 @@ Schema is created automatically on first connect. New columns are added
 non-destructively so existing databases survive upgrades.
 """
 
+import contextlib
 import datetime
 import json
 import uuid
@@ -91,6 +92,56 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    async def ping(self) -> None:
+        """Raise if the backend is not reachable. Used by the readiness probe."""
+        ...
+
+    # ── API tokens (timestamps are unix seconds) ─────────────────────────────
+
+    @abstractmethod
+    async def create_token(
+        self, token_id: str, name: str, token_hash: str, role: str,
+        created_at: float, expires_at: Optional[float],
+    ) -> None: ...
+
+    @abstractmethod
+    async def get_token_by_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
+        """Return the token row for a hash, or None. Includes revoked_at/expires_at."""
+        ...
+
+    @abstractmethod
+    async def list_tokens(self) -> list[dict[str, Any]]:
+        """List tokens (metadata only — never the hash), newest first."""
+        ...
+
+    @abstractmethod
+    async def revoke_token(self, token_id: str, revoked_at: float) -> int:
+        """Mark a token revoked. Returns the number of rows updated (0 if unknown)."""
+        ...
+
+    @abstractmethod
+    async def purge_older_than(self, cutoff_ts: float) -> int:
+        """Delete calls older than cutoff_ts (unix seconds). Returns rows deleted."""
+        ...
+
+    @abstractmethod
+    async def delete_user(self, user_id: str) -> int:
+        """Right-to-erasure: delete all calls for a user_id. Returns rows deleted."""
+        ...
+
+    # ── Audit log ────────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def add_audit(self, entry: dict[str, Any]) -> None:
+        """Append an audit entry (who did what to which target, when)."""
+        ...
+
+    @abstractmethod
+    async def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return recent audit entries, newest first."""
+        ...
+
+    @abstractmethod
     async def close(self) -> None: ...
 
 
@@ -129,10 +180,33 @@ class _SqliteStore(Store):
             ON llm_calls (session_id) WHERE session_id IS NOT NULL
         """)
         for col, col_type in _MIGRATION_COLUMNS:
-            try:
+            # Column already exists on an upgraded DB — that's fine, skip it.
+            with contextlib.suppress(Exception):
                 await db.execute(f"ALTER TABLE llm_calls ADD COLUMN {col} {col_type}")
-            except Exception:
-                pass
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                token_id   TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                role       TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL,
+                revoked_at REAL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id           TEXT PRIMARY KEY,
+                timestamp    REAL NOT NULL,
+                actor_role   TEXT,
+                actor_source TEXT,
+                actor        TEXT,
+                action       TEXT NOT NULL,
+                target       TEXT,
+                details      TEXT,
+                client       TEXT
+            )
+        """)
         await db.commit()
         return cls(db)
 
@@ -255,6 +329,80 @@ class _SqliteStore(Store):
         await self._db.commit()
         return deleted
 
+    async def ping(self) -> None:
+        await self._db.execute("SELECT 1")
+
+    async def create_token(self, token_id, name, token_hash, role, created_at, expires_at) -> None:
+        await self._db.execute(
+            "INSERT INTO api_tokens (token_id, name, token_hash, role, created_at, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (token_id, name, token_hash, role, created_at, expires_at),
+        )
+        await self._db.commit()
+
+    async def get_token_by_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
+        async with self._db.execute(
+            "SELECT * FROM api_tokens WHERE token_hash = ?", (token_hash,)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_tokens(self) -> list[dict[str, Any]]:
+        async with self._db.execute(
+            "SELECT token_id, name, role, created_at, expires_at, revoked_at "
+            "FROM api_tokens ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def revoke_token(self, token_id: str, revoked_at: float) -> int:
+        async with self._db.execute(
+            "UPDATE api_tokens SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL",
+            (revoked_at, token_id),
+        ) as cur:
+            updated = cur.rowcount
+        await self._db.commit()
+        return updated
+
+    async def purge_older_than(self, cutoff_ts: float) -> int:
+        async with self._db.execute(
+            "DELETE FROM llm_calls WHERE timestamp < ?", (cutoff_ts,)
+        ) as cur:
+            deleted = cur.rowcount
+        await self._db.commit()
+        return deleted
+
+    async def delete_user(self, user_id: str) -> int:
+        async with self._db.execute(
+            "DELETE FROM llm_calls WHERE user_id = ?", (user_id,)
+        ) as cur:
+            deleted = cur.rowcount
+        await self._db.commit()
+        return deleted
+
+    async def add_audit(self, entry: dict[str, Any]) -> None:
+        await self._db.execute(
+            "INSERT INTO audit_log "
+            "(id, timestamp, actor_role, actor_source, actor, action, target, details, client) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (entry["id"], entry["timestamp"], entry.get("actor_role"), entry.get("actor_source"),
+             entry.get("actor"), entry["action"], entry.get("target"), entry.get("details"),
+             entry.get("client")),
+        )
+        await self._db.commit()
+
+    async def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with self._db.execute(
+            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+        ) as cur:
+            rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["timestamp"] = _unix_to_iso(d["timestamp"])
+            out.append(d)
+        return out
+
     async def close(self) -> None:
         await self._db.close()
 
@@ -295,7 +443,7 @@ class _PostgresStore(Store):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS llm_calls (
                     action_id   UUID        PRIMARY KEY,
-                    session_id  UUID,
+                    session_id  TEXT,
                     timestamp   TIMESTAMPTZ NOT NULL,
                     model_id    TEXT        NOT NULL,
                     provider    TEXT        NOT NULL,
@@ -318,6 +466,44 @@ class _PostgresStore(Store):
                 await conn.execute(
                     f"ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS {col} {pg_type}"
                 )
+            # Migrate legacy databases where session_id was a UUID column. Agent
+            # session ids are arbitrary strings (e.g. "auto-2026-01-01" or a
+            # human-readable run name), not UUIDs — a UUID column silently rejected
+            # every non-UUID id. Convert in place; the guard avoids a needless table
+            # rewrite on already-migrated databases.
+            session_type = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'llm_calls' AND column_name = 'session_id'"
+            )
+            if session_type == "uuid":
+                await conn.execute(
+                    "ALTER TABLE llm_calls ALTER COLUMN session_id TYPE TEXT "
+                    "USING session_id::text"
+                )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    token_id   TEXT PRIMARY KEY,
+                    name       TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    role       TEXT NOT NULL,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    expires_at DOUBLE PRECISION,
+                    revoked_at DOUBLE PRECISION
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id           TEXT PRIMARY KEY,
+                    timestamp    DOUBLE PRECISION NOT NULL,
+                    actor_role   TEXT,
+                    actor_source TEXT,
+                    actor        TEXT,
+                    action       TEXT NOT NULL,
+                    target       TEXT,
+                    details      TEXT,
+                    client       TEXT
+                )
+            """)
         return cls(pool)
 
     async def save(self, action_id, req, resp, *, session_id=None, user_id=None,
@@ -345,7 +531,7 @@ class _PostgresStore(Store):
                      $26,$27)
                 """,
                 uuid.UUID(action_id),
-                uuid.UUID(session_id) if session_id else None,
+                session_id,
                 req.timestamp, req.model_id, req.provider,
                 json.dumps(req.messages),
                 json.dumps(req.tools) if req.tools is not None else None,
@@ -370,7 +556,7 @@ class _PostgresStore(Store):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM llm_calls WHERE session_id = $1 ORDER BY timestamp ASC",
-                uuid.UUID(session_id),
+                session_id,
             )
         return [_pg_row(r) for r in rows]
 
@@ -418,7 +604,7 @@ class _PostgresStore(Store):
         async with self._pool.acquire() as conn:
             val = await conn.fetchval(
                 "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE session_id = $1 AND status_code = 200",
-                uuid.UUID(session_id),
+                session_id,
             )
         return float(val or 0)
 
@@ -445,9 +631,81 @@ class _PostgresStore(Store):
     async def delete_session(self, session_id: str) -> int:
         async with self._pool.acquire() as conn:
             result = await conn.execute(
-                "DELETE FROM llm_calls WHERE session_id = $1", uuid.UUID(session_id)
+                "DELETE FROM llm_calls WHERE session_id = $1", session_id
             )
         return int(result.split()[-1])  # "DELETE N"
+
+    async def ping(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+
+    async def create_token(self, token_id, name, token_hash, role, created_at, expires_at) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO api_tokens (token_id, name, token_hash, role, created_at, expires_at) "
+                "VALUES ($1,$2,$3,$4,$5,$6)",
+                token_id, name, token_hash, role, created_at, expires_at,
+            )
+
+    async def get_token_by_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM api_tokens WHERE token_hash = $1", token_hash
+            )
+        return dict(row) if row else None
+
+    async def list_tokens(self) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT token_id, name, role, created_at, expires_at, revoked_at "
+                "FROM api_tokens ORDER BY created_at DESC"
+            )
+        return [dict(r) for r in rows]
+
+    async def revoke_token(self, token_id: str, revoked_at: float) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE api_tokens SET revoked_at = $1 WHERE token_id = $2 AND revoked_at IS NULL",
+                revoked_at, token_id,
+            )
+        return int(result.split()[-1])  # "UPDATE N"
+
+    async def purge_older_than(self, cutoff_ts: float) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM llm_calls WHERE timestamp < to_timestamp($1)", cutoff_ts
+            )
+        return int(result.split()[-1])  # "DELETE N"
+
+    async def delete_user(self, user_id: str) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM llm_calls WHERE user_id = $1", user_id
+            )
+        return int(result.split()[-1])  # "DELETE N"
+
+    async def add_audit(self, entry: dict[str, Any]) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO audit_log "
+                "(id, timestamp, actor_role, actor_source, actor, action, target, details, client) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                entry["id"], entry["timestamp"], entry.get("actor_role"), entry.get("actor_source"),
+                entry.get("actor"), entry["action"], entry.get("target"), entry.get("details"),
+                entry.get("client"),
+            )
+
+    async def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT $1", limit
+            )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["timestamp"] = _unix_to_iso(d["timestamp"])
+            out.append(d)
+        return out
 
     async def close(self) -> None:
         await self._pool.close()

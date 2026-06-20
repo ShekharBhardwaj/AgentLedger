@@ -8,8 +8,28 @@ Reads config from environment variables:
     AGENTLEDGER_DSN                   Database URL (default: sqlite:///agentledger.db)
     AGENTLEDGER_HOST                  Bind host (default: 0.0.0.0)
     AGENTLEDGER_PORT                  Bind port (default: 8000)
-    AGENTLEDGER_API_KEY               Protect dashboard/API endpoints (default: none)
+    AGENTLEDGER_API_KEY               Master admin key; protects dashboard/API/management
+                                      endpoints and bootstraps scoped API tokens (default: none)
+    AGENTLEDGER_INGEST_KEY            Require x-agentledger-ingest-key on the proxy path,
+                                      closing the open relay (default: none — open)
+    AGENTLEDGER_EXPORT_HMAC_KEY       Sign compliance exports with a tamper-evident keyed
+                                      hmac-sha256 tag instead of a sha256 checksum (default: none)
     AGENTLEDGER_EXTRA_PATHS           Extra comma-separated paths to capture (default: none)
+
+  Performance (capture off the request hot path):
+    AGENTLEDGER_ASYNC_CAPTURE         Persist captures on a background worker so they never add
+                                      latency to the call — eventually consistent (default: off)
+    AGENTLEDGER_CAPTURE_QUEUE_MAX     Max queued captures before shedding load (default: 10000)
+
+  Data governance (applies to the stored copy only — the agent's response is untouched):
+    AGENTLEDGER_CAPTURE_LEVEL         full (default) | metadata (drop prompts/responses, keep metrics)
+    AGENTLEDGER_REDACT                Redact PII/secrets: "all" or a comma list of categories
+                                      (email,ssn,credit_card,ip,api_key) (default: off)
+    AGENTLEDGER_REDACT_PATTERNS       Optional JSON of extra regexes — {"label": "regex", ...} or ["regex", ...]
+    AGENTLEDGER_RETENTION_DAYS        Delete captured calls older than N days via a background purge;
+                                      unset = keep forever (default: none)
+    AGENTLEDGER_AUDIT_LOG             Record an audit trail of who viewed/exported/deleted what and
+                                      token/erasure actions; set 0 to disable (default: on)
 
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
     AGENTLEDGER_BUDGET_SESSION        Max USD per session_id (default: none)
@@ -49,6 +69,7 @@ from .alerts import AlertConfig
 from .app import create_app
 from .otel import init_otel
 from .ratelimit import RateLimitConfig
+from .redact import build_redactor
 
 
 class _QuietFilter(logging.Filter):
@@ -107,6 +128,29 @@ app = create_app(
         error_rate=_float_env("AGENTLEDGER_ALERT_ERROR_RATE"),
         daily_spend=_float_env("AGENTLEDGER_ALERT_DAILY_SPEND"),
     ),
+    async_capture=os.environ.get("AGENTLEDGER_ASYNC_CAPTURE", "").lower() in ("1", "true", "yes", "on"),
+    capture_queue_max=int(os.environ.get("AGENTLEDGER_CAPTURE_QUEUE_MAX", "10000")),
+    capture_level=os.environ.get("AGENTLEDGER_CAPTURE_LEVEL", "full"),
+    redactor=build_redactor(
+        os.environ.get("AGENTLEDGER_REDACT", ""),
+        os.environ.get("AGENTLEDGER_REDACT_PATTERNS", ""),
+    ),
+    retention_days=_float_env("AGENTLEDGER_RETENTION_DAYS"),
+    audit_enabled=os.environ.get("AGENTLEDGER_AUDIT_LOG", "1").lower() not in ("0", "false", "no", "off"),
 )
+
+_logger = logging.getLogger("agentledger")
+if not os.environ.get("AGENTLEDGER_INGEST_KEY"):
+    _logger.warning(
+        "AGENTLEDGER_INGEST_KEY is not set — the proxy will forward requests from "
+        "ANYONE who can reach it (open relay). Set it to require x-agentledger-ingest-key "
+        "before exposing the proxy beyond localhost."
+    )
+if not os.environ.get("AGENTLEDGER_API_KEY"):
+    _logger.warning(
+        "AGENTLEDGER_API_KEY is not set — the dashboard, API, and MCP endpoints are "
+        "UNAUTHENTICATED. Set it (or configure API tokens) before exposing AgentLedger "
+        "beyond localhost."
+    )
 
 uvicorn.run(app, host=host, port=port)

@@ -1,7 +1,9 @@
 # AgentLedger
 
 [![CI](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/codeql.yml/badge.svg)](https://github.com/ShekharBhardwaj/AgentLedger/actions/workflows/codeql.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentic-ledger)](https://pypi.org/project/agentic-ledger/)
+[![Python versions](https://img.shields.io/pypi/pyversions/agentic-ledger)](https://pypi.org/project/agentic-ledger/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://ghcr.io/shekharbhardwaj/agentledger)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -165,7 +167,11 @@ Every LLM call is stored with:
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Health check — `{"status":"ok","version":"..."}`. No auth required. |
+| `GET` | `/health` | Liveness — `{"status":"ok","version":"..."}`. No auth, never touches the store. |
+| `GET` | `/readyz` | Readiness — pings the store; `503` when unreachable. Also reports `capture_dropped`. |
+| `GET` | `/metrics` | Prometheus metrics (captures persisted/dropped, queue depth). |
+| `GET` | `/api/audit` | Audit trail of sensitive actions (admin). |
+| `DELETE` | `/api/users/{user_id}` | Right-to-erasure: delete all of a user's captured calls (admin). |
 | `GET` | `/` | Live dashboard |
 | `WS` | `/ws` | WebSocket stream — powers live dashboard updates |
 | `GET` | `/api/sessions` | List recent sessions with aggregated stats |
@@ -185,7 +191,7 @@ curl http://localhost:8000/session/run-1
 # Search across all sessions
 curl "http://localhost:8000/api/search?q=failed+to+connect"
 
-# Download JSON audit trail (includes SHA-256 hash for tamper detection)
+# Download JSON audit trail (includes an integrity tag; keyed HMAC when configured)
 curl http://localhost:8000/export/run-1 -o audit-run-1.json
 
 # Printable HTML report — open in browser, print to PDF
@@ -249,8 +255,17 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_DSN` | No | `sqlite:///agentledger.db` (Docker: `sqlite:////data/agentledger.db`) | Database. SQLite for local dev, Postgres URL for production. |
 | `AGENTLEDGER_HOST` | No | `0.0.0.0` | Host to bind to. Use `127.0.0.1` to restrict to localhost only. |
 | `AGENTLEDGER_PORT` | No | `8000` | Port to run on. |
-| `AGENTLEDGER_API_KEY` | No | _(none)_ | Protects the dashboard and all read endpoints. Skip for local dev. Set when the proxy is on a server — you choose the value. |
+| `AGENTLEDGER_API_KEY` | No | _(none)_ | Master admin key. When set, the dashboard, read, and management endpoints require authentication; the key grants the `admin` role and bootstraps API tokens (below). Skip for local dev; set when the proxy is on a server — you choose the value. |
+| `AGENTLEDGER_INGEST_KEY` | No | _(none)_ | When set, the proxy forwards a request only if it carries a matching `x-agentledger-ingest-key` header — closing the open relay. Off by default; a loud startup warning fires when unset. |
+| `AGENTLEDGER_EXPORT_HMAC_KEY` | No | _(none)_ | When set, compliance exports carry a tamper-evident keyed `hmac-sha256` integrity tag instead of a plain `sha256` checksum. |
 | `AGENTLEDGER_EXTRA_PATHS` | No | _(none)_ | Comma-separated additional request paths to capture, e.g. `v1/responses,v1/custom`. Built-in paths (`v1/chat/completions`, `v1/messages`, `v1/responses`) are always captured. |
+| `AGENTLEDGER_ASYNC_CAPTURE` | No | `off` | Persist captures on a background worker so storage never adds latency to the agent's call. Trade-off: reads become **eventually consistent** (a just-captured call may not be queryable for a brief moment). Recommended for high throughput. |
+| `AGENTLEDGER_CAPTURE_QUEUE_MAX` | No | `10000` | Max captures buffered in async mode before load is shed (drops are counted in `/metrics`). |
+| `AGENTLEDGER_CAPTURE_LEVEL` | No | `full` | `full` stores everything; `metadata` stores only metrics/metadata (model, tokens, cost, latency, agent, status) and drops prompts, responses, and tools. |
+| `AGENTLEDGER_REDACT` | No | _(off)_ | Redact PII/secrets in stored data: `all`, or a comma list of `email,ssn,credit_card,ip,api_key`. Replaces matches with `[REDACTED:<label>]`. Only the stored copy is affected — the agent's response is untouched. |
+| `AGENTLEDGER_REDACT_PATTERNS` | No | _(none)_ | Extra redaction regexes as JSON: `{"label": "regex", ...}` or `["regex", ...]`. |
+| `AGENTLEDGER_RETENTION_DAYS` | No | _(keep forever)_ | Delete captured calls older than N days via a background purge worker. |
+| `AGENTLEDGER_AUDIT_LOG` | No | `on` | Record an audit trail of who viewed/exported/deleted what plus token/erasure actions. Set `0` to disable. |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 
@@ -331,6 +346,36 @@ curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/session/run-1
 # Query param (browser)
 http://localhost:8000?api_key=my-secret
 ```
+
+#### Scoped API tokens (RBAC)
+
+The master key is convenient but coarse. For team access, mint **scoped, revocable tokens** with roles instead of sharing the master secret. Tokens are random secrets shown once at creation; only their SHA-256 hash is stored.
+
+Roles are hierarchical:
+
+| Role | Can |
+|---|---|
+| `viewer` | read captured data — dashboard, API, export, MCP |
+| `editor` | viewer + delete sessions |
+| `admin` | editor + manage API tokens |
+
+```bash
+# Mint a viewer token (admin only — use the master key to bootstrap)
+curl -X POST http://localhost:8000/api/tokens \
+  -H "x-agentledger-api-key: my-secret" \
+  -H "content-type: application/json" \
+  -d '{"name": "grafana-readonly", "role": "viewer", "expires_in_days": 90}'
+# → {"token_id": "...", "token": "agl_…", "role": "viewer", ...}  (token shown once)
+
+# Use it (Bearer header, x-agentledger-token, or ?token=)
+curl -H "Authorization: Bearer agl_…" http://localhost:8000/api/sessions
+
+# List and revoke
+curl -H "x-agentledger-api-key: my-secret" http://localhost:8000/api/tokens
+curl -X DELETE -H "x-agentledger-api-key: my-secret" http://localhost:8000/api/tokens/<token_id>
+```
+
+> Auth is enforced only when `AGENTLEDGER_API_KEY` is set; the master key is the admin bootstrap for minting tokens. (Dashboard credential propagation over the live `/ws` feed is tracked as follow-up — see `ROADMAP.md`.)
 
 ---
 
@@ -542,17 +587,17 @@ Spans are grouped into traces by `session_id` — all calls in a session appear 
 
 ## Compliance export
 
-Every session can be exported as a signed audit trail — useful for regulated industries, internal audits, or passing traces to external tools.
+Every session can be exported as an integrity-tagged audit trail — useful for regulated industries, internal audits, or passing traces to external tools.
 
 ```bash
-# Machine-readable JSON with SHA-256 integrity hash
+# Machine-readable JSON with an integrity tag over the calls array
 curl http://localhost:8000/export/run-1 -o audit-run-1.json
 
 # Printable HTML — open in browser and print to PDF
 open http://localhost:8000/export/run-1/report
 ```
 
-The JSON export includes a `sha256` hash of the calls array. Recipients can verify the export has not been modified after generation.
+The JSON export carries an integrity tag over the calls array. By default this is a `sha256` **checksum** — it catches accidental corruption but is not a signature (anyone who edits the calls can recompute it). Set `AGENTLEDGER_EXPORT_HMAC_KEY` to switch to a keyed **`hmac-sha256`** tag, which is tamper-evident: a recipient holding the key can detect any modification, and the tag cannot be forged without the key.
 
 ---
 
