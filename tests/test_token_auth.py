@@ -110,7 +110,8 @@ def test_viewer_token_can_read_but_not_delete_or_manage(proxy, monkeypatch):
 
     assert client.get("/api/sessions", headers=_bearer(viewer)).status_code == 200
     # cannot delete (needs editor)
-    assert client.delete("/api/sessions/whatever", headers=_bearer(viewer)).status_code == 403
+    denied = client.delete("/api/sessions/whatever", headers=_bearer(viewer))
+    assert denied.status_code == 403
     # cannot manage tokens (needs admin)
     assert client.get("/api/tokens", headers=_bearer(viewer)).status_code == 403
     assert client.post("/api/tokens", json={"name": "x", "role": "viewer"},
@@ -150,7 +151,8 @@ def test_revoked_token_is_rejected(proxy, monkeypatch):
     token, token_id = created["token"], created["token_id"]
 
     assert client.get("/api/sessions", headers=_bearer(token)).status_code == 200
-    assert client.delete(f"/api/tokens/{token_id}", headers=MASTER).status_code == 200
+    revoked = client.delete(f"/api/tokens/{token_id}", headers=MASTER)
+    assert revoked.status_code == 200
     assert client.get("/api/sessions", headers=_bearer(token)).status_code == 401
 
 

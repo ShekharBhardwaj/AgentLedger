@@ -44,7 +44,8 @@ def test_delete_session_is_audited(proxy, monkeypatch):
     client = proxy(handler=lambda r: httpx.Response(200, json=openai_response()))
     client.post("/v1/chat/completions", json=_CHAT, headers={"x-agentledger-session-id": "s-del"})
 
-    assert client.delete("/api/sessions/s-del", headers=MASTER).status_code == 200
+    deleted = client.delete("/api/sessions/s-del", headers=MASTER)
+    assert deleted.status_code == 200
     entry = next(e for e in _audit(client) if e["action"] == "delete_session")
     assert entry["target"] == "s-del"
 
@@ -101,7 +102,8 @@ def test_audit_and_erasure_require_admin(proxy, monkeypatch):
     viewer = {"Authorization": f"Bearer {token}"}
 
     assert client.get("/api/audit", headers=viewer).status_code == 403
-    assert client.delete("/api/users/u1", headers=viewer).status_code == 403
+    erase = client.delete("/api/users/u1", headers=viewer)
+    assert erase.status_code == 403
 
 
 def test_audit_can_be_disabled(proxy, monkeypatch):
