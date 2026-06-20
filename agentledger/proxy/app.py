@@ -173,6 +173,7 @@ def create_app(
     redactor: Optional[Redactor] = None,
     retention_days: Optional[float] = None,
     retention_interval_seconds: float = 3600.0,
+    audit_enabled: bool = True,
 ) -> FastAPI:
 
     broadcaster = _Broadcaster()
@@ -194,6 +195,7 @@ def create_app(
     # this many days. None = keep forever.
     _retention_days = retention_days
     _retention_interval = retention_interval_seconds
+    _audit_enabled = audit_enabled
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -330,6 +332,26 @@ def create_app(
             raise HTTPException(status_code=403, detail=f"Forbidden: requires '{role}' role")
         return principal
 
+    async def _audit(
+        principal: Optional[Principal], request: Request,
+        action: str, target: Optional[str] = None, details: Optional[str] = None,
+    ) -> None:
+        """Record a sensitive access/mutation. Best-effort — never breaks the request."""
+        if not _audit_enabled:
+            return
+        with suppress(Exception):
+            await app.state.store.add_audit({
+                "id": str(uuid.uuid4()),
+                "timestamp": time.time(),
+                "actor_role": principal.role if principal else None,
+                "actor_source": principal.source if principal else "open",
+                "actor": (principal.name or principal.token_id) if principal else None,
+                "action": action,
+                "target": target,
+                "details": details,
+                "client": request.client.host if request.client else None,
+            })
+
     # ── Health ───────────────────────────────────────────────────────────────
 
     @app.get("/health")
@@ -411,17 +433,32 @@ def create_app(
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request) -> JSONResponse:
-        await _require(request, ROLE_EDITOR)
+        principal = await _require(request, ROLE_EDITOR)
         deleted = await request.app.state.store.delete_session(session_id)
         if deleted == 0:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "delete_session", session_id, f"deleted {deleted} calls")
         return JSONResponse({"deleted": deleted})
+
+    @app.delete("/api/users/{user_id}")
+    async def erase_user(user_id: str, request: Request) -> JSONResponse:
+        """Right-to-erasure: delete all captured calls for a user_id."""
+        principal = await _require(request, ROLE_ADMIN)
+        deleted = await request.app.state.store.delete_user(user_id)
+        await _audit(principal, request, "erase_user", user_id, f"deleted {deleted} calls")
+        return JSONResponse({"deleted": deleted})
+
+    @app.get("/api/audit")
+    async def get_audit(request: Request, limit: int = 100) -> JSONResponse:
+        await _require(request, ROLE_ADMIN)
+        entries = await request.app.state.store.list_audit(limit=max(1, min(limit, 1000)))
+        return JSONResponse(entries)
 
     # ── API token management (admin only) ─────────────────────────────────────
 
     @app.post("/api/tokens")
     async def create_api_token(request: Request) -> JSONResponse:
-        await _require(request, ROLE_ADMIN)
+        principal = await _require(request, ROLE_ADMIN)
         try:
             body = await request.json()
         except Exception:
@@ -440,6 +477,7 @@ def create_app(
         await request.app.state.store.create_token(
             token_id, name, token_hash, role, created_at, expires_at
         )
+        await _audit(principal, request, "create_token", token_id, f"role={role} name={name}")
         # The raw token is returned exactly once; only its hash is stored.
         return JSONResponse({
             "token_id": token_id, "name": name, "role": role,
@@ -454,44 +492,49 @@ def create_app(
 
     @app.delete("/api/tokens/{token_id}")
     async def revoke_api_token(token_id: str, request: Request) -> JSONResponse:
-        await _require(request, ROLE_ADMIN)
+        principal = await _require(request, ROLE_ADMIN)
         revoked = await request.app.state.store.revoke_token(token_id, time.time())
         if not revoked:
             raise HTTPException(status_code=404, detail="token_id not found or already revoked")
+        await _audit(principal, request, "revoke_token", token_id)
         return JSONResponse({"revoked": True})
 
     @app.get("/api/search")
     async def api_search(request: Request, q: str = "") -> JSONResponse:
-        await _require(request, ROLE_VIEWER)
+        principal = await _require(request, ROLE_VIEWER)
         if not q.strip():
             return JSONResponse([])
         results = await request.app.state.store.search(q.strip())
+        await _audit(principal, request, "search", q.strip()[:200])
         return JSONResponse(results)
 
     @app.get("/explain/{action_id}")
     async def explain(action_id: str, request: Request) -> JSONResponse:
-        await _require(request, ROLE_VIEWER)
+        principal = await _require(request, ROLE_VIEWER)
         record = await request.app.state.store.get(action_id)
         if record is None:
             raise HTTPException(status_code=404, detail="action_id not found")
+        await _audit(principal, request, "explain", action_id)
         return JSONResponse(record)
 
     @app.get("/session/{session_id}")
     async def session(session_id: str, request: Request) -> JSONResponse:
-        await _require(request, ROLE_VIEWER)
+        principal = await _require(request, ROLE_VIEWER)
         records = await request.app.state.store.get_session(session_id)
         if not records:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "view_session", session_id)
         return JSONResponse(records)
 
     # ── Compliance export ─────────────────────────────────────────────────────
 
     @app.get("/export/{session_id}")
     async def export_json(session_id: str, request: Request) -> Response:
-        await _require(request, ROLE_VIEWER)
+        principal = await _require(request, ROLE_VIEWER)
         calls = await request.app.state.store.get_session(session_id)
         if not calls:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "export_session", session_id)
         export = build_export(session_id, calls)
         filename = f"agentledger-{session_id[:16]}.json"
         return Response(
@@ -502,10 +545,11 @@ def create_app(
 
     @app.get("/export/{session_id}/report")
     async def export_report(session_id: str, request: Request) -> HTMLResponse:
-        await _require(request, ROLE_VIEWER)
+        principal = await _require(request, ROLE_VIEWER)
         calls = await request.app.state.store.get_session(session_id)
         if not calls:
             raise HTTPException(status_code=404, detail="session_id not found")
+        await _audit(principal, request, "export_report", session_id)
         export = build_export(session_id, calls)
         return HTMLResponse(render_html_report(export))
 

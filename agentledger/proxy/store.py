@@ -125,6 +125,23 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    async def delete_user(self, user_id: str) -> int:
+        """Right-to-erasure: delete all calls for a user_id. Returns rows deleted."""
+        ...
+
+    # ── Audit log ────────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def add_audit(self, entry: dict[str, Any]) -> None:
+        """Append an audit entry (who did what to which target, when)."""
+        ...
+
+    @abstractmethod
+    async def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return recent audit entries, newest first."""
+        ...
+
+    @abstractmethod
     async def close(self) -> None: ...
 
 
@@ -175,6 +192,19 @@ class _SqliteStore(Store):
                 created_at REAL NOT NULL,
                 expires_at REAL,
                 revoked_at REAL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id           TEXT PRIMARY KEY,
+                timestamp    REAL NOT NULL,
+                actor_role   TEXT,
+                actor_source TEXT,
+                actor        TEXT,
+                action       TEXT NOT NULL,
+                target       TEXT,
+                details      TEXT,
+                client       TEXT
             )
         """)
         await db.commit()
@@ -342,6 +372,37 @@ class _SqliteStore(Store):
         await self._db.commit()
         return deleted
 
+    async def delete_user(self, user_id: str) -> int:
+        async with self._db.execute(
+            "DELETE FROM llm_calls WHERE user_id = ?", (user_id,)
+        ) as cur:
+            deleted = cur.rowcount
+        await self._db.commit()
+        return deleted
+
+    async def add_audit(self, entry: dict[str, Any]) -> None:
+        await self._db.execute(
+            "INSERT INTO audit_log "
+            "(id, timestamp, actor_role, actor_source, actor, action, target, details, client) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (entry["id"], entry["timestamp"], entry.get("actor_role"), entry.get("actor_source"),
+             entry.get("actor"), entry["action"], entry.get("target"), entry.get("details"),
+             entry.get("client")),
+        )
+        await self._db.commit()
+
+    async def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with self._db.execute(
+            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+        ) as cur:
+            rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["timestamp"] = _unix_to_iso(d["timestamp"])
+            out.append(d)
+        return out
+
     async def close(self) -> None:
         await self._db.close()
 
@@ -428,6 +489,19 @@ class _PostgresStore(Store):
                     created_at DOUBLE PRECISION NOT NULL,
                     expires_at DOUBLE PRECISION,
                     revoked_at DOUBLE PRECISION
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id           TEXT PRIMARY KEY,
+                    timestamp    DOUBLE PRECISION NOT NULL,
+                    actor_role   TEXT,
+                    actor_source TEXT,
+                    actor        TEXT,
+                    action       TEXT NOT NULL,
+                    target       TEXT,
+                    details      TEXT,
+                    client       TEXT
                 )
             """)
         return cls(pool)
@@ -602,6 +676,36 @@ class _PostgresStore(Store):
                 "DELETE FROM llm_calls WHERE timestamp < to_timestamp($1)", cutoff_ts
             )
         return int(result.split()[-1])  # "DELETE N"
+
+    async def delete_user(self, user_id: str) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM llm_calls WHERE user_id = $1", user_id
+            )
+        return int(result.split()[-1])  # "DELETE N"
+
+    async def add_audit(self, entry: dict[str, Any]) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO audit_log "
+                "(id, timestamp, actor_role, actor_source, actor, action, target, details, client) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                entry["id"], entry["timestamp"], entry.get("actor_role"), entry.get("actor_source"),
+                entry.get("actor"), entry["action"], entry.get("target"), entry.get("details"),
+                entry.get("client"),
+            )
+
+    async def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT $1", limit
+            )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["timestamp"] = _unix_to_iso(d["timestamp"])
+            out.append(d)
+        return out
 
     async def close(self) -> None:
         await self._pool.close()

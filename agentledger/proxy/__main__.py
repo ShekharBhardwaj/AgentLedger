@@ -28,6 +28,8 @@ Reads config from environment variables:
     AGENTLEDGER_REDACT_PATTERNS       Optional JSON of extra regexes — {"label": "regex", ...} or ["regex", ...]
     AGENTLEDGER_RETENTION_DAYS        Delete captured calls older than N days via a background purge;
                                       unset = keep forever (default: none)
+    AGENTLEDGER_AUDIT_LOG             Record an audit trail of who viewed/exported/deleted what and
+                                      token/erasure actions; set 0 to disable (default: on)
 
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
     AGENTLEDGER_BUDGET_SESSION        Max USD per session_id (default: none)
@@ -134,6 +136,7 @@ app = create_app(
         os.environ.get("AGENTLEDGER_REDACT_PATTERNS", ""),
     ),
     retention_days=_float_env("AGENTLEDGER_RETENTION_DAYS"),
+    audit_enabled=os.environ.get("AGENTLEDGER_AUDIT_LOG", "1").lower() not in ("0", "false", "no", "off"),
 )
 
 _logger = logging.getLogger("agentledger")

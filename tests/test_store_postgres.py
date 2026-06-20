@@ -123,6 +123,27 @@ async def test_purge_older_than(pg_store):
     assert [r["action_id"] for r in await pg_store.get_session("s")] == ["pn"]
 
 
+async def test_delete_user(pg_store):
+    """Right-to-erasure deletes only the target user's calls."""
+    await pg_store.save("d1", _req(), _resp(), session_id="s1", user_id="u1", status_code=200)
+    await pg_store.save("d2", _req(), _resp(), session_id="s2", user_id="u2", status_code=200)
+    assert await pg_store.delete_user("u1") == 1
+    assert await pg_store.get("d1") is None
+    assert await pg_store.get("d2") is not None
+
+
+async def test_audit_crud(pg_store):
+    """Audit entries append and list newest-first."""
+    await pg_store.add_audit({
+        "id": "au1", "timestamp": time.time(), "action": "export_session", "target": "s1",
+        "actor_role": "admin", "actor_source": "master", "actor": None, "details": None,
+        "client": "10.0.0.1",
+    })
+    rows = await pg_store.list_audit(limit=10)
+    assert rows[0]["action"] == "export_session" and rows[0]["target"] == "s1"
+    assert rows[0]["actor_source"] == "master"
+
+
 async def test_token_crud(pg_store):
     """API token create/get/list/revoke round-trips on Postgres."""
     from agentledger.proxy.auth import generate_token

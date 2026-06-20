@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checksum a "signed" trail).
 
 ### Added
+- **Audit log.** Records who did what to which target — session views, searches, exports,
+  deletes, token create/revoke, and erasure — with the acting principal (master / token /
+  open, role, name) and client IP. Viewable at `GET /api/audit` (admin). On by default;
+  `AGENTLEDGER_AUDIT_LOG=0` disables it.
+- **Right-to-erasure.** `DELETE /api/users/{user_id}` (admin) deletes all captured calls for
+  a user (`Store.delete_user` on SQLite and Postgres) and records the action in the audit log.
 - **Data retention / TTL.** `AGENTLEDGER_RETENTION_DAYS` runs a background worker that
   periodically deletes captured calls older than the configured window (new
   `Store.purge_older_than` on SQLite and Postgres). Unset = keep forever.

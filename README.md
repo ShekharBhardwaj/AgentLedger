@@ -170,6 +170,8 @@ Every LLM call is stored with:
 | `GET` | `/health` | Liveness — `{"status":"ok","version":"..."}`. No auth, never touches the store. |
 | `GET` | `/readyz` | Readiness — pings the store; `503` when unreachable. Also reports `capture_dropped`. |
 | `GET` | `/metrics` | Prometheus metrics (captures persisted/dropped, queue depth). |
+| `GET` | `/api/audit` | Audit trail of sensitive actions (admin). |
+| `DELETE` | `/api/users/{user_id}` | Right-to-erasure: delete all of a user's captured calls (admin). |
 | `GET` | `/` | Live dashboard |
 | `WS` | `/ws` | WebSocket stream — powers live dashboard updates |
 | `GET` | `/api/sessions` | List recent sessions with aggregated stats |
@@ -263,6 +265,7 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_REDACT` | No | _(off)_ | Redact PII/secrets in stored data: `all`, or a comma list of `email,ssn,credit_card,ip,api_key`. Replaces matches with `[REDACTED:<label>]`. Only the stored copy is affected — the agent's response is untouched. |
 | `AGENTLEDGER_REDACT_PATTERNS` | No | _(none)_ | Extra redaction regexes as JSON: `{"label": "regex", ...}` or `["regex", ...]`. |
 | `AGENTLEDGER_RETENTION_DAYS` | No | _(keep forever)_ | Delete captured calls older than N days via a background purge worker. |
+| `AGENTLEDGER_AUDIT_LOG` | No | `on` | Record an audit trail of who viewed/exported/deleted what plus token/erasure actions. Set `0` to disable. |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 
