@@ -116,20 +116,22 @@ async def test_purge_older_than(pg_store):
                            model_id="gpt-4o", provider="openai", timestamp=now - 10 * 86400)
     new = CanonicalRequest(messages=[{"role": "user", "content": "y"}],
                            model_id="gpt-4o", provider="openai", timestamp=now - 3600)
-    await pg_store.save("po", old, _resp(), session_id="s")
-    await pg_store.save("pn", new, _resp(), session_id="s")
+    old_id, new_id = str(uuid.uuid4()), str(uuid.uuid4())
+    await pg_store.save(old_id, old, _resp(), session_id="s")
+    await pg_store.save(new_id, new, _resp(), session_id="s")
 
     assert await pg_store.purge_older_than(now - 7 * 86400) == 1
-    assert [r["action_id"] for r in await pg_store.get_session("s")] == ["pn"]
+    assert [r["action_id"] for r in await pg_store.get_session("s")] == [new_id]
 
 
 async def test_delete_user(pg_store):
     """Right-to-erasure deletes only the target user's calls."""
-    await pg_store.save("d1", _req(), _resp(), session_id="s1", user_id="u1", status_code=200)
-    await pg_store.save("d2", _req(), _resp(), session_id="s2", user_id="u2", status_code=200)
+    d1, d2 = str(uuid.uuid4()), str(uuid.uuid4())
+    await pg_store.save(d1, _req(), _resp(), session_id="s1", user_id="u1", status_code=200)
+    await pg_store.save(d2, _req(), _resp(), session_id="s2", user_id="u2", status_code=200)
     assert await pg_store.delete_user("u1") == 1
-    assert await pg_store.get("d1") is None
-    assert await pg_store.get("d2") is not None
+    assert await pg_store.get(d1) is None
+    assert await pg_store.get(d2) is not None
 
 
 async def test_audit_crud(pg_store):
