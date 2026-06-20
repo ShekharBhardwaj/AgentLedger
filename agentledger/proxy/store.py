@@ -120,6 +120,11 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    async def purge_older_than(self, cutoff_ts: float) -> int:
+        """Delete calls older than cutoff_ts (unix seconds). Returns rows deleted."""
+        ...
+
+    @abstractmethod
     async def close(self) -> None: ...
 
 
@@ -328,6 +333,14 @@ class _SqliteStore(Store):
             updated = cur.rowcount
         await self._db.commit()
         return updated
+
+    async def purge_older_than(self, cutoff_ts: float) -> int:
+        async with self._db.execute(
+            "DELETE FROM llm_calls WHERE timestamp < ?", (cutoff_ts,)
+        ) as cur:
+            deleted = cur.rowcount
+        await self._db.commit()
+        return deleted
 
     async def close(self) -> None:
         await self._db.close()
@@ -582,6 +595,13 @@ class _PostgresStore(Store):
                 revoked_at, token_id,
             )
         return int(result.split()[-1])  # "UPDATE N"
+
+    async def purge_older_than(self, cutoff_ts: float) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM llm_calls WHERE timestamp < to_timestamp($1)", cutoff_ts
+            )
+        return int(result.split()[-1])  # "DELETE N"
 
     async def close(self) -> None:
         await self._pool.close()

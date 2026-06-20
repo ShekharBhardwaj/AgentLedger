@@ -262,6 +262,7 @@ Once connected, you can ask your assistant things like:
 | `AGENTLEDGER_CAPTURE_LEVEL` | No | `full` | `full` stores everything; `metadata` stores only metrics/metadata (model, tokens, cost, latency, agent, status) and drops prompts, responses, and tools. |
 | `AGENTLEDGER_REDACT` | No | _(off)_ | Redact PII/secrets in stored data: `all`, or a comma list of `email,ssn,credit_card,ip,api_key`. Replaces matches with `[REDACTED:<label>]`. Only the stored copy is affected — the agent's response is untouched. |
 | `AGENTLEDGER_REDACT_PATTERNS` | No | _(none)_ | Extra redaction regexes as JSON: `{"label": "regex", ...}` or `["regex", ...]`. |
+| `AGENTLEDGER_RETENTION_DAYS` | No | _(keep forever)_ | Delete captured calls older than N days via a background purge worker. |
 
 **Cost budgets** — block calls that exceed a spend limit (returns HTTP 429):
 

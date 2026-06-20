@@ -109,6 +109,20 @@ async def test_ping_succeeds(pg_store):
     await pg_store.ping()
 
 
+async def test_purge_older_than(pg_store):
+    """Retention purge deletes only rows older than the cutoff."""
+    now = time.time()
+    old = CanonicalRequest(messages=[{"role": "user", "content": "x"}],
+                           model_id="gpt-4o", provider="openai", timestamp=now - 10 * 86400)
+    new = CanonicalRequest(messages=[{"role": "user", "content": "y"}],
+                           model_id="gpt-4o", provider="openai", timestamp=now - 3600)
+    await pg_store.save("po", old, _resp(), session_id="s")
+    await pg_store.save("pn", new, _resp(), session_id="s")
+
+    assert await pg_store.purge_older_than(now - 7 * 86400) == 1
+    assert [r["action_id"] for r in await pg_store.get_session("s")] == ["pn"]
+
+
 async def test_token_crud(pg_store):
     """API token create/get/list/revoke round-trips on Postgres."""
     from agentledger.proxy.auth import generate_token

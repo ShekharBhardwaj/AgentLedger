@@ -171,6 +171,8 @@ def create_app(
     capture_queue_max: int = 10_000,
     capture_level: str = "full",
     redactor: Optional[Redactor] = None,
+    retention_days: Optional[float] = None,
+    retention_interval_seconds: float = 3600.0,
 ) -> FastAPI:
 
     broadcaster = _Broadcaster()
@@ -188,6 +190,10 @@ def create_app(
     # only (never to the response returned to the agent).
     _capture_level = normalize_capture_level(capture_level)
     _redactor = redactor
+    # Retention: when set, a background worker periodically deletes calls older than
+    # this many days. None = keep forever.
+    _retention_days = retention_days
+    _retention_interval = retention_interval_seconds
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -200,7 +206,14 @@ def create_app(
         worker: Optional[asyncio.Task] = None
         if _async_capture:
             worker = asyncio.create_task(_capture_worker(app))
+        retention_task: Optional[asyncio.Task] = None
+        if _retention_days is not None:
+            retention_task = asyncio.create_task(_retention_worker(app))
         yield
+        if retention_task is not None:
+            retention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retention_task
         if worker is not None:
             # Flush pending captures, then stop the worker, before closing the store.
             with suppress(asyncio.TimeoutError):
@@ -255,6 +268,20 @@ def create_app(
                 _record_capture_drop(app, job.action_id)
             finally:
                 _capture_queue.task_done()
+
+    async def _retention_worker(app: FastAPI) -> None:
+        """Periodically delete captured calls older than the retention window."""
+        while True:
+            try:
+                cutoff = time.time() - _retention_days * 86400
+                deleted = await app.state.store.purge_older_than(cutoff)
+                if deleted:
+                    logger.info(
+                        "Retention: purged %d calls older than %s days", deleted, _retention_days
+                    )
+            except Exception:
+                logger.warning("Retention purge failed", exc_info=True)
+            await asyncio.sleep(_retention_interval)
 
     async def _capture(job: _CaptureJob) -> None:
         """Persist a captured call — enqueued (async mode) or inline (sync mode)."""

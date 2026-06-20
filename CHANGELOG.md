@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checksum a "signed" trail).
 
 ### Added
+- **Data retention / TTL.** `AGENTLEDGER_RETENTION_DAYS` runs a background worker that
+  periodically deletes captured calls older than the configured window (new
+  `Store.purge_older_than` on SQLite and Postgres). Unset = keep forever.
 - **Data governance — capture levels & redaction.** `AGENTLEDGER_CAPTURE_LEVEL=metadata`
   stores only metrics/metadata (model, tokens, cost, latency, agent, status) and drops
   prompts, responses, and tools. `AGENTLEDGER_REDACT` (`all` or a comma list of

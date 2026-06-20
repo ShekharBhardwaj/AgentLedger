@@ -26,6 +26,8 @@ Reads config from environment variables:
     AGENTLEDGER_REDACT                Redact PII/secrets: "all" or a comma list of categories
                                       (email,ssn,credit_card,ip,api_key) (default: off)
     AGENTLEDGER_REDACT_PATTERNS       Optional JSON of extra regexes — {"label": "regex", ...} or ["regex", ...]
+    AGENTLEDGER_RETENTION_DAYS        Delete captured calls older than N days via a background purge;
+                                      unset = keep forever (default: none)
 
   Budgets (returns HTTP 429 when exceeded, or warns — see AGENTLEDGER_BUDGET_ACTION):
     AGENTLEDGER_BUDGET_SESSION        Max USD per session_id (default: none)
@@ -131,6 +133,7 @@ app = create_app(
         os.environ.get("AGENTLEDGER_REDACT", ""),
         os.environ.get("AGENTLEDGER_REDACT_PATTERNS", ""),
     ),
+    retention_days=_float_env("AGENTLEDGER_RETENTION_DAYS"),
 )
 
 _logger = logging.getLogger("agentledger")
