@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-19
+
+### Upgrade notes
+- **Postgres:** on first connect, `session_id` is migrated in place from `UUID` to `TEXT`
+  (`ALTER COLUMN`). This is automatic and safe — no action required — but it is a schema change.
+- **Audit log is on by default:** a new `audit_log` table is created and a row is written for
+  each sensitive read/export/delete. Set `AGENTLEDGER_AUDIT_LOG=0` to disable.
+- **Costs for `*-mini`/`*-nano` models are now correct** (previously over-reported, e.g.
+  `gpt-4o-mini` was billed at `gpt-4o` rates). Newly captured costs will be lower/accurate.
+
 ### Security
 - Optional **proxy-ingest key** (`AGENTLEDGER_INGEST_KEY`): when set, the proxy only
   forwards requests that carry a matching `x-agentledger-ingest-key`, closing the open
@@ -99,4 +109,5 @@ Older releases predate this changelog. See the GitHub Releases page for history:
 https://github.com/ShekharBhardwaj/AgentLedger/releases
 -->
 
-[Unreleased]: https://github.com/ShekharBhardwaj/AgentLedger/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/ShekharBhardwaj/AgentLedger/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ShekharBhardwaj/AgentLedger/compare/v0.1.7...v0.2.0
